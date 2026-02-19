@@ -1,12 +1,12 @@
 NAME		= webserv
 CXX 		= c++
 CXXFLAGS 	= -Wall -Wextra -Werror -std=c++98
-SRC 		= main.cpp ConfigParser.cpp 
+SRC 		= main.cpp ConfigParser.cpp HttpRequest.cpp
 OBJ 		= $(SRC:.cpp=.o)
 
-all:$(NAME)
+all: $(NAME)
 
-$(NAME):$(OBJ)
+$(NAME): $(OBJ)
 	$(CXX) $(CXXFLAGS) -o $(NAME) $(OBJ)
 
 clean:
