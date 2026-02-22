@@ -7,10 +7,11 @@
 
 struct ServerConfig 
 {
-    int port = 0;
-    std::string host = "";
-    std::string root = "";
+    int port;
+    std::string host;
+    std::string root;
     std::map<int, std::string> error_pages;
+    ServerConfig() : port(0), host(""), root("") {}
 
 };
 
