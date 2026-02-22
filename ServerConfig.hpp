@@ -3,12 +3,13 @@
 
 #include <string>
 #include <map>
+#include <vector>
 
 struct ServerConfig 
 {
-    int port;
-    std::string host;
-    std::string root;
+    int port = 0;
+    std::string host = "";
+    std::string root = "";
     std::map<int, std::string> error_pages;
 
 };

@@ -11,7 +11,7 @@ int main(int argc, char **argv)
     {
         //Production
         std::string configFile;
-        if (argc == 2) 
+        if (argc == 2)
             configFile = argv[1];
         else if (argc == 1) 
             configFile = "default.conf";

@@ -1,14 +1,17 @@
 #include "ConfigParser.hpp"
 #include <fstream>
 #include <sstream>
-#include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <stdexcept>
 
 
 ServerConfig ConfigParser::parse(const std::string& filename) 
 {
     ServerConfig config;
+    bool port_set = false;
+    bool host_set = false;
+    bool root_set = false;
     std::ifstream file(filename.c_str());
     if (!file.is_open())
         throw std::runtime_error("Could not open config file");
@@ -22,26 +25,49 @@ ServerConfig ConfigParser::parse(const std::string& filename)
         iss >> key;
         if (key == "port") 
         {
-            iss >> config.port;
+            int port;
+            if (!(iss >> port) || iss.fail() || port < 1 || port > 65535)
+                throw std::runtime_error("Invalid or missing port value in config file");
+            config.port = port;
+            port_set = true;
         } 
         else if (key == "host") 
         {
-            iss >> config.host;
+            if (!(iss >> config.host) || iss.fail())
+                throw std::runtime_error("Missing host value in config file");
+            host_set = true;
         } 
         else if (key == "root") 
         {
-            iss >> config.root;
+            if (!(iss >> config.root) || iss.fail())
+                throw std::runtime_error("Missing root value in config file");
+            if (config.root.find("..") != std::string::npos || config.root[0] == '/')
+                throw std::runtime_error("Invalid root path in config file: path traversal or absolute path detected");
+            root_set = true;
         } 
         else if (key == "error_pages") 
         {
             int code;
             std::string path;
-            iss >> code >> path;
+            if (!(iss >> code) || iss.fail())
+                throw std::runtime_error("Missing error page code in config file");
+            if (!(iss >> path) || iss.fail())
+                throw std::runtime_error("Missing error page path in config file");
+            if (code < 400 || code > 599)
+                throw std::runtime_error("Invalid HTTP status code in error_pages");
+            if (path.find("..") != std::string::npos || path[0] == '/')
+                throw std::runtime_error("Invalid error page path in config file: path traversal or absolute path detected");
             config.error_pages[code] = path;
         }
         else 
          throw std::runtime_error("Invalid key in config file");
     }
+    if (!port_set)
+        throw std::runtime_error("Missing required port value in config file");
+    if (!host_set)
+        throw std::runtime_error("Missing required host value in config file");
+    if (!root_set)
+        throw std::runtime_error("Missing required root value in config file");
     return config;
 }
 
