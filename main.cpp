@@ -4,6 +4,7 @@
 #include "ServerConfig.hpp"
 #include "ConfigParser.hpp"
 #include "HttpRequest.hpp"
+#include "Server.hpp"
 
 int main(int argc, char **argv) 
 {
@@ -28,29 +29,10 @@ int main(int argc, char **argv)
         for (std::map<int, std::string>::iterator it = config.error_pages.begin(); it != config.error_pages.end(); ++it) 
             std::cout << "Error page " << it->first << ": " << it->second << std::endl;
 
-       //Start of testing processes -> HttpRequest tests
-        {
-            std::string raw = "GET /index.html HTTP/1.1\r\nHost: localhost\r\nUser-Agent: test-agent\r\n\r\n";
-            HttpRequest req = HttpRequest::parse(raw);
-            assert(req.method == "GET");
-            assert(req.path == "/index.html");
-            assert(req.version == "HTTP/1.1");
-            assert(req.headers["Host"] == "localhost");
-            assert(req.headers["User-Agent"] == "test-agent");
-            std::cout << "test_basic_get passed\n";
-        }
-        {
-            std::string raw = "POST /submit HTTP/1.0\r\nContent-Type:   text/plain  \r\nX-Test:foo\r\n\r\n";
-            HttpRequest req = HttpRequest::parse(raw);
-            assert(req.method == "POST");
-            assert(req.path == "/submit");
-            assert(req.version == "HTTP/1.0");
-            assert(req.headers["Content-Type"] == "text/plain");
-            assert(req.headers["X-Test"] == "foo");
-            std::cout << "test_header_whitespace passed\n";
-        }
-        std::cout << "All tests passed!\n";  // End of testing processes
-        
+        // Start server with config
+        Server myServer(config);
+        myServer.init();
+        myServer.run();
     }
     catch (const std::exception& e)
     {
