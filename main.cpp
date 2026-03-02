@@ -4,6 +4,7 @@
 #include "ServerConfig.hpp"
 #include "ConfigParser.hpp"
 #include "HttpRequest.hpp"
+#include "ResponseBuild.hpp"
 
 int main(int argc, char **argv) 
 {
@@ -27,7 +28,30 @@ int main(int argc, char **argv)
         std::cout << "Root: " << config.root << std::endl;
         for (std::map<int, std::string>::iterator it = config.error_pages.begin(); it != config.error_pages.end(); ++it) 
             std::cout << "Error page " << it->first << ": " << it->second << std::endl;
+        ResponseBuild builder;
 
+        std::vector<std::string> testPaths;
+            testPaths.push_back("/index.html"); //  200 OK
+             testPaths.push_back("/doesnotexist.html") ;//  404
+             testPaths.push_back("/../etc/passwd"); //  403
+             testPaths.push_back("/forbidden.html"); //read permission → 403 ((need to do this to the file:chmod 000 www/forbidden.html))
+             testPaths.push_back("/folder/"); // directory → index.html
+
+        for (size_t i = 0; i < testPaths.size(); ++i)
+        {
+            std::string path = testPaths[i];
+            HttpRequest req;
+            req.method = "GET";
+            req.path = path;
+            req.version = "HTTP/1.1";
+
+            std::cout << "===== Testing path: " << path << " =====\n";
+            std::string response = builder.handle(req, config);
+            std::cout << response << "\n\n";
+        }
+
+    }
+    /*
        //Start of testing processes -> HttpRequest tests
         {
             std::string raw = "GET /index.html HTTP/1.1\r\nHost: localhost\r\nUser-Agent: test-agent\r\n\r\n";
@@ -50,8 +74,7 @@ int main(int argc, char **argv)
             std::cout << "test_header_whitespace passed\n";
         }
         std::cout << "All tests passed!\n";  // End of testing processes
-        
-    }
+  */      
     catch (const std::exception& e)
     {
         std::cerr << "Configuration Error: " << e.what() << std::endl;
