@@ -7,8 +7,12 @@
 #include <fcntl.h>
 #include <vector>
 #include <sys/epoll.h>
+#include <sys/socket.h>
 #include <iostream>
 #include <unistd.h>
+#include <csignal>
+
+volatile sig_atomic_t g_keepRunning = 1;
 
 Server::Server(int port, const ServerConfig& config) 
     : _server_fd(-1), _port(port), epoll_fd(-1), config(config) 
@@ -64,7 +68,7 @@ void Server::run()
 {
     struct epoll_event events[1024];
 
-    while (true)
+    while (g_keepRunning)
     {
         int nfds = epoll_wait(epoll_fd, events, 1024, 1000);
         if (nfds < 0)
@@ -147,14 +151,41 @@ void Server::run()
                             }
                             total_sent += sent;
                         }
-                        
-                        std::cout << "Response sent, closing connection\n";
+
                         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+                        shutdown(fd, SHUT_RDWR);
                         close(fd);
                         _clientBuffers.erase(fd);
+                        std::cout << "Response sent, closing connection" << std::endl;
                     }
                 }
             }
         }
     }
+}
+
+void Server::stop()
+{
+    std::map<int, std::string>::iterator it;
+    for (it = _clientBuffers.begin(); it != _clientBuffers.end(); ++it)
+    {
+        int fd = it->first;
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+        close(fd);
+    }
+    _clientBuffers.clear();
+    
+    if (_server_fd != -1)
+    {
+        close(_server_fd);
+        _server_fd = -1;
+    }
+    
+    if (epoll_fd != -1)
+    {
+        close(epoll_fd);
+        epoll_fd = -1;
+    }
+    
+    std::cout << "Server stopped safely" << std::endl;
 }

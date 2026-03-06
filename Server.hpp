@@ -1,7 +1,7 @@
 #ifndef SERVER_HPP
 #define SERVER_HPP
 
-
+#include <csignal>
 #include <netinet/in.h>
 #include <map>
 #include <string>
@@ -22,6 +22,7 @@ class Server
         
         void init();
         void run();
+        void stop();
 };
 
 #endif
