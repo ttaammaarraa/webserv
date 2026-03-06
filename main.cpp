@@ -5,6 +5,7 @@
 #include "ConfigParser.hpp"
 #include "HttpRequest.hpp"
 #include "ResponseBuild.hpp"
+#include "Server.hpp"
 
 int main(int argc, char **argv) 
 {
@@ -49,6 +50,9 @@ int main(int argc, char **argv)
             std::string response = builder.handle(req, config);
             std::cout << response << "\n\n";
         }
+        Server server(config.port, config);
+        server.init();
+        server.run();
 
     }
     /*
