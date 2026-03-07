@@ -7,6 +7,12 @@
 #include <string>
 #include "ServerConfig.hpp"
 
+struct Connection
+{
+    int fd;
+    bool isServer;
+};
+
 class Server
 {
     private:

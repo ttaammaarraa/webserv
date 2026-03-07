@@ -1,67 +1,72 @@
 #include "Server.hpp"
 #include "HttpRequest.hpp"
 #include "ResponseBuild.hpp"
-#include "ServerConfig.hpp"
+
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
-#include <vector>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <iostream>
 #include <unistd.h>
-#include <csignal>
 
 volatile sig_atomic_t g_keepRunning = 1;
 
-Server::Server(int port, const ServerConfig& config) 
-    : _server_fd(-1), _port(port), epoll_fd(-1), config(config) 
+Server::Server(int port, const ServerConfig& config)
+    : _server_fd(-1), _port(port), epoll_fd(-1), config(config)
 {
     std::memset(&_address, 0, sizeof(_address));
+
     _address.sin_family = AF_INET;
     _address.sin_addr.s_addr = INADDR_ANY;
     _address.sin_port = htons(_port);
-}
-
-void Server::init()
-{
-    _server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (_server_fd < 0)
-        throw std::runtime_error("Socket creation failed");
-
-    int opt = 1;
-    if (setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
-        throw std::runtime_error("setsockopt failed");
-
-    int flags = fcntl(_server_fd, F_GETFL, 0);
-    if (fcntl(_server_fd, F_SETFL, flags | O_NONBLOCK) < 0)
-        throw std::runtime_error("fcntl failed");
-
-    if (bind(_server_fd, (struct sockaddr *)&_address, sizeof(_address)) < 0)
-        throw std::runtime_error("bind failed");
-
-    if (listen(_server_fd, 128) < 0)
-        throw std::runtime_error("listen failed");
-
-    epoll_fd = epoll_create1(0);
-    if (epoll_fd == -1)
-        throw std::runtime_error("epoll_create1 failed");
-
-    struct epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.fd = _server_fd;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, _server_fd, &ev) == -1)
-        throw std::runtime_error("epoll_ctl failed");
-
-    std::cout << "Server started on port " << _port << std::endl;
 }
 
 Server::~Server()
 {
     if (_server_fd != -1)
         close(_server_fd);
+
     if (epoll_fd != -1)
         close(epoll_fd);
+}
+
+void Server::init()
+{
+    _server_fd = socket(AF_INET, SOCK_STREAM, 0);
+
+    if (_server_fd < 0)
+        throw std::runtime_error("socket failed");
+
+    int opt = 1;
+    setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    int flags = fcntl(_server_fd, F_GETFL, 0);
+    fcntl(_server_fd, F_SETFL, flags | O_NONBLOCK);
+
+    if (bind(_server_fd, (sockaddr*)&_address, sizeof(_address)) < 0)
+        throw std::runtime_error("bind failed");
+
+    if (listen(_server_fd, 128) < 0)
+        throw std::runtime_error("listen failed");
+
+    epoll_fd = epoll_create1(0);
+
+    if (epoll_fd == -1)
+        throw std::runtime_error("epoll_create1 failed");
+
+    struct epoll_event ev;
+
+    Connection* conn = new Connection();
+    conn->fd = _server_fd;
+    conn->isServer = true;
+
+    ev.events = EPOLLIN;
+    ev.data.ptr = conn;
+
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, _server_fd, &ev);
+
+    std::cout << "Server started on port " << _port << std::endl;
 }
 
 void Server::run()
@@ -71,93 +76,119 @@ void Server::run()
     while (g_keepRunning)
     {
         int nfds = epoll_wait(epoll_fd, events, 1024, 1000);
+
         if (nfds < 0)
         {
-            if (errno == EINTR) continue;
+            if (errno == EINTR)
+                continue;
+
             throw std::runtime_error("epoll_wait failed");
         }
 
-        for (int i = 0; i < nfds; ++i)
+        for (int i = 0; i < nfds; i++)
         {
-            int fd = events[i].data.fd;
+            Connection* conn = (Connection*)events[i].data.ptr;
+            int fd = conn->fd;
 
             if (events[i].events & (EPOLLERR | EPOLLHUP))
             {
                 epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
                 close(fd);
+
+                delete conn;
                 _clientBuffers.erase(fd);
+
                 continue;
             }
 
-            if (fd == _server_fd)
+            if (conn->isServer)
             {
-                while (true)
-                {
-                    sockaddr_in client_addr;
-                    socklen_t len = sizeof(client_addr);
-                    int client_fd = accept(_server_fd, (sockaddr *)&client_addr, &len);
+                sockaddr_in client_addr;
+                socklen_t addrlen = sizeof(client_addr);
 
-                    if (client_fd < 0)
-                        break;
+                int client_fd = accept(_server_fd,
+                                       (sockaddr*)&client_addr,
+                                       &addrlen);
 
-                    int c_flags = fcntl(client_fd, F_GETFL, 0);
-                    fcntl(client_fd, F_SETFL, c_flags | O_NONBLOCK);
+                if (client_fd < 0)
+                    continue;
 
-                    struct epoll_event ev_client;
-                    ev_client.events = EPOLLIN | EPOLLET;
-                    ev_client.data.fd = client_fd;
-                    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev_client);
+                int flags = fcntl(client_fd, F_GETFL, 0);
+                fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
 
-                    _clientBuffers[client_fd] = "";
-                    std::cout << "New client connected\n";
-                }
+                struct epoll_event ev;
+
+                Connection* clientConn = new Connection();
+                clientConn->fd = client_fd;
+                clientConn->isServer = false;
+
+                ev.events = EPOLLIN;
+                ev.data.ptr = clientConn;
+
+                epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
+
+                _clientBuffers[client_fd] = "";
+
+                std::cout << "Client connected\n";
             }
             else if (events[i].events & EPOLLIN)
             {
-                char buffer[1024];
+                char buffer[4096];
+
                 int bytes = recv(fd, buffer, sizeof(buffer), 0);
 
                 if (bytes <= 0)
                 {
-                    if (bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-                        continue;
                     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
                     close(fd);
-                    _clientBuffers.erase(fd);
-                    std::cout << "Client disconnected\n";
-                }
-                else
-                {
-                    _clientBuffers[fd].append(buffer, bytes);
-                    std::string& client_buffer = _clientBuffers[fd];
-                    size_t header_end = client_buffer.find("\r\n\r\n");
-                    
-                    if (header_end != std::string::npos)
-                    {
-                        std::cout << "Complete request received, processing...\n";
-                        HttpRequest request = HttpRequest::parse(client_buffer);
-                        std::string response = ResponseBuild::handle(request, config);
-                        
-                        int total_sent = 0;
-                        int response_size = response.size();
-                        while (total_sent < response_size)
-                        {
-                            int sent = send(fd, response.c_str() + total_sent, 
-                                          response_size - total_sent, 0);
-                            if (sent < 0)
-                            {
-                                std::cerr << "Send failed\n";
-                                break;
-                            }
-                            total_sent += sent;
-                        }
 
-                        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                        shutdown(fd, SHUT_RDWR);
-                        close(fd);
-                        _clientBuffers.erase(fd);
-                        std::cout << "Response sent, closing connection" << std::endl;
+                    delete conn;
+                    _clientBuffers.erase(fd);
+
+                    std::cout << "Client disconnected\n";
+
+                    continue;
+                }
+
+                _clientBuffers[fd].append(buffer, bytes);
+
+                std::string& client_buffer = _clientBuffers[fd];
+
+                size_t header_end = client_buffer.find("\r\n\r\n");
+
+                if (header_end != std::string::npos)
+                {
+                    HttpRequest request =
+                        HttpRequest::parse(client_buffer);
+
+                    std::string response =
+                        ResponseBuild::handle(request, config);
+
+                    int total_sent = 0;
+                    int size = response.size();
+
+                    while (total_sent < size)
+                    {
+                        int sent = send(fd,
+                                        response.c_str() + total_sent,
+                                        size - total_sent,
+                                        0);
+
+                        if (sent <= 0)
+                            break;
+
+                        total_sent += sent;
                     }
+
+                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+
+                    shutdown(fd, SHUT_RDWR);
+                    close(fd);
+
+                    delete conn;
+                    _clientBuffers.erase(fd);
+
+                    std::cout << "Response sent\n";
                 }
             }
         }
@@ -166,26 +197,29 @@ void Server::run()
 
 void Server::stop()
 {
-    std::map<int, std::string>::iterator it;
-    for (it = _clientBuffers.begin(); it != _clientBuffers.end(); ++it)
+    for (std::map<int,std::string>::iterator it =
+         _clientBuffers.begin();
+         it != _clientBuffers.end(); ++it)
     {
         int fd = it->first;
+
         epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
         close(fd);
     }
+
     _clientBuffers.clear();
-    
+
     if (_server_fd != -1)
     {
         close(_server_fd);
         _server_fd = -1;
     }
-    
+
     if (epoll_fd != -1)
     {
         close(epoll_fd);
         epoll_fd = -1;
     }
-    
-    std::cout << "Server stopped safely" << std::endl;
+
+    std::cout << "Server stopped safely\n";
 }
