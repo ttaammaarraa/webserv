@@ -31,10 +31,9 @@ Server::~Server()
         close(epoll_fd);
 }
 
-void Server::init()
+void Server::setupServerSocket()
 {
     _server_fd = socket(AF_INET, SOCK_STREAM, 0);
-
     if (_server_fd < 0)
         throw std::runtime_error("socket failed");
 
@@ -49,12 +48,18 @@ void Server::init()
 
     if (listen(_server_fd, 128) < 0)
         throw std::runtime_error("listen failed");
+}
 
+void Server::setupEpoll()
+{
     epoll_fd = epoll_create1(0);
 
     if (epoll_fd == -1)
         throw std::runtime_error("epoll_create1 failed");
+}
 
+void Server::addServerToEpoll()
+{
     struct epoll_event ev;
 
     Connection* conn = new Connection();
@@ -65,6 +70,13 @@ void Server::init()
     ev.data.ptr = conn;
 
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, _server_fd, &ev);
+}
+
+void Server::init()
+{
+    setupServerSocket();
+    setupEpoll();
+    addServerToEpoll();
 
     std::cout << "Server started on port " << _port << std::endl;
 }

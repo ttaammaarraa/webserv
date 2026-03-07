@@ -29,6 +29,9 @@ class Server
         void init();
         void run();
         void stop();
+        void setupServerSocket();
+        void setupEpoll();
+        void addServerToEpoll();
 };
 
 #endif
