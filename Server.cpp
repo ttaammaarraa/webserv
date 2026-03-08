@@ -2,6 +2,7 @@
 #include "HttpRequest.hpp"
 #include "ResponseBuild.hpp"
 
+#include <csignal>
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
@@ -12,6 +13,11 @@
 
 volatile sig_atomic_t g_keepRunning = 1;
 
+Server::Server() : _server_fd(-1), _port(0), epoll_fd(-1), _serverConn(NULL)
+{
+    std::memset(&_address, 0, sizeof(_address));
+}
+
 Server::Server(int port, const ServerConfig& config)
     : _server_fd(-1), _port(port), epoll_fd(-1), config(config), _serverConn(NULL)
 {
@@ -20,6 +26,43 @@ Server::Server(int port, const ServerConfig& config)
     _address.sin_family = AF_INET;
     _address.sin_addr.s_addr = INADDR_ANY;
     _address.sin_port = htons(_port);
+}
+
+Server::Server(const Server& other)
+{
+    _server_fd = other._server_fd;
+    _port = other._port;
+    epoll_fd = other.epoll_fd;
+    _address = other._address;
+    _clientBuffers = other._clientBuffers;
+    config = other.config;
+
+    if (other._serverConn)
+        _serverConn = new Connection(*other._serverConn);
+    else
+        _serverConn = NULL;
+}
+
+Server& Server::operator=(const Server& other)
+{
+    if (this != &other)
+    {
+        _server_fd = other._server_fd;
+        _port = other._port;
+        epoll_fd = other.epoll_fd;
+        _address = other._address;
+        _clientBuffers = other._clientBuffers;
+        config = other.config;
+
+        if (_serverConn)
+            delete _serverConn;
+
+        if (other._serverConn)
+            _serverConn = new Connection(*other._serverConn);
+        else
+            _serverConn = NULL;
+    }
+    return *this;
 }
 
 Server::~Server()
@@ -84,6 +127,66 @@ void Server::init()
     std::cout << "Server started on port " << _port << std::endl;
 }
 
+void Server::cleanup_connection(Connection* conn)
+{
+    if (!conn) return;
+
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
+    shutdown(conn->fd, SHUT_RDWR);
+    close(conn->fd);
+    
+    _clientBuffers.erase(conn->fd);
+    delete conn;
+}
+
+void Server::handle_accept()
+{
+    sockaddr_in client_addr;
+    socklen_t addrlen = sizeof(client_addr);
+    int client_fd = accept(_server_fd, (sockaddr*)&client_addr, &addrlen);
+
+    if (client_fd < 0) return;
+
+    int flags = fcntl(client_fd, F_GETFL, 0);
+    fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+
+    Connection* clientConn = new Connection();
+    clientConn->fd = client_fd;
+    clientConn->isServer = false;
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.ptr = clientConn;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
+
+    _clientBuffers[client_fd] = "";
+    std::cout << "Client connected\n";
+}
+
+void Server::handle_client(Connection* conn)
+{
+    char buffer[4096];
+    int bytes = recv(conn->fd, buffer, sizeof(buffer), 0);
+
+    if (bytes <= 0)
+    {
+        cleanup_connection(conn);
+        std::cout << "Client disconnected\n";
+        return;
+    }
+
+    _clientBuffers[conn->fd].append(buffer, bytes);
+    size_t header_end = _clientBuffers[conn->fd].find("\r\n\r\n");
+    if (header_end != std::string::npos)
+    {
+        HttpRequest request = HttpRequest::parse(_clientBuffers[conn->fd]);
+        std::string response = ResponseBuild::handle(request, config);
+        send(conn->fd, response.c_str(), response.size(), 0);
+        std::cout << "Response sent\n";
+        cleanup_connection(conn);
+    }
+}
+
 void Server::run()
 {
     struct epoll_event events[1024];
@@ -91,121 +194,25 @@ void Server::run()
     while (g_keepRunning)
     {
         int nfds = epoll_wait(epoll_fd, events, 1024, 1000);
-
         if (nfds < 0)
         {
-            if (errno == EINTR)
-                continue;
-
+            if (errno == EINTR) continue;
             throw std::runtime_error("epoll_wait failed");
         }
 
         for (int i = 0; i < nfds; i++)
         {
             Connection* conn = (Connection*)events[i].data.ptr;
-            int fd = conn->fd;
 
             if (events[i].events & (EPOLLERR | EPOLLHUP))
             {
-                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                close(fd);
-
-                delete conn;
-                _clientBuffers.erase(fd);
-
+                cleanup_connection(conn);
                 continue;
             }
-
             if (conn->isServer)
-            {
-                sockaddr_in client_addr;
-                socklen_t addrlen = sizeof(client_addr);
-
-                int client_fd = accept(_server_fd,
-                                       (sockaddr*)&client_addr,
-                                       &addrlen);
-
-                if (client_fd < 0)
-                    continue;
-
-                int flags = fcntl(client_fd, F_GETFL, 0);
-                fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-
-                struct epoll_event ev;
-
-                Connection* clientConn = new Connection();
-                clientConn->fd = client_fd;
-                clientConn->isServer = false;
-
-                ev.events = EPOLLIN;
-                ev.data.ptr = clientConn;
-
-                epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &ev);
-
-                _clientBuffers[client_fd] = "";
-
-                std::cout << "Client connected\n";
-            }
-            else if (events[i].events & EPOLLIN)
-            {
-                char buffer[4096];
-
-                int bytes = recv(fd, buffer, sizeof(buffer), 0);
-
-                if (bytes <= 0)
-                {
-                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-                    close(fd);
-
-                    delete conn;
-                    _clientBuffers.erase(fd);
-
-                    std::cout << "Client disconnected\n";
-
-                    continue;
-                }
-
-                _clientBuffers[fd].append(buffer, bytes);
-
-                std::string& client_buffer = _clientBuffers[fd];
-
-                size_t header_end = client_buffer.find("\r\n\r\n");
-
-                if (header_end != std::string::npos)
-                {
-                    HttpRequest request =
-                        HttpRequest::parse(client_buffer);
-
-                    std::string response =
-                        ResponseBuild::handle(request, config);
-
-                    int total_sent = 0;
-                    int size = response.size();
-
-                    while (total_sent < size)
-                    {
-                        int sent = send(fd,
-                                        response.c_str() + total_sent,
-                                        size - total_sent,
-                                        0);
-
-                        if (sent <= 0)
-                            break;
-
-                        total_sent += sent;
-                    }
-
-                    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-
-                    shutdown(fd, SHUT_RDWR);
-                    close(fd);
-
-                    delete conn;
-                    _clientBuffers.erase(fd);
-
-                    std::cout << "Response sent\n";
-                }
-            }
+                handle_accept();
+            else 
+                handle_client(conn);
         }
     }
 }

@@ -1,7 +1,6 @@
 #ifndef SERVER_HPP
 #define SERVER_HPP
 
-#include <csignal>
 #include <netinet/in.h>
 #include <map>
 #include <string>
@@ -23,16 +22,22 @@ class Server
         std::map<int, std::string> _clientBuffers;
         ServerConfig config;
         Connection* _serverConn;
-    public:
-    Server(int port, const ServerConfig &config);
-    ~Server();
-        
-        void init();
-        void run();
-        void stop();
+
+        void cleanup_connection(Connection* conn);
+        void handle_accept();
+        void handle_client(Connection* conn);
         void setupServerSocket();
         void setupEpoll();
         void addServerToEpoll();
+    public:
+        Server();
+        Server(int port, const ServerConfig &config);
+        Server(const Server& other);
+        Server& operator=(const Server& other);
+        ~Server();
+        void init();
+        void run();
+        void stop();
 };
 
 #endif
