@@ -22,6 +22,7 @@ class Server
         sockaddr_in _address;
         std::map<int, std::string> _clientBuffers;
         ServerConfig config;
+        Connection* _serverConn;
     public:
     Server(int port, const ServerConfig &config);
     ~Server();

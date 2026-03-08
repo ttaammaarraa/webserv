@@ -13,7 +13,7 @@
 volatile sig_atomic_t g_keepRunning = 1;
 
 Server::Server(int port, const ServerConfig& config)
-    : _server_fd(-1), _port(port), epoll_fd(-1), config(config)
+    : _server_fd(-1), _port(port), epoll_fd(-1), config(config), _serverConn(NULL)
 {
     std::memset(&_address, 0, sizeof(_address));
 
@@ -29,6 +29,9 @@ Server::~Server()
 
     if (epoll_fd != -1)
         close(epoll_fd);
+
+    if (_serverConn)
+        delete _serverConn;
 }
 
 void Server::setupServerSocket()
@@ -62,12 +65,12 @@ void Server::addServerToEpoll()
 {
     struct epoll_event ev;
 
-    Connection* conn = new Connection();
-    conn->fd = _server_fd;
-    conn->isServer = true;
+    _serverConn = new Connection();
+    _serverConn->fd = _server_fd;
+    _serverConn->isServer = true;
 
     ev.events = EPOLLIN;
-    ev.data.ptr = conn;
+    ev.data.ptr = _serverConn;
 
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, _server_fd, &ev);
 }
