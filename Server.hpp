@@ -22,6 +22,7 @@ class Server
         std::map<int, std::string> _clientBuffers;
         ServerConfig config;
         Connection* _serverConn;
+        std::map<int, Connection*> _connections; // Track all active connections
 
         void cleanup_connection(Connection* conn);
         void handle_accept();

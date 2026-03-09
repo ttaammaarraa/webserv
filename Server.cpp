@@ -10,6 +10,7 @@
 #include <sys/socket.h>
 #include <iostream>
 #include <unistd.h>
+#include <map>
 
 volatile sig_atomic_t g_keepRunning = 1;
 
@@ -73,8 +74,9 @@ Server::~Server()
     if (epoll_fd != -1)
         close(epoll_fd);
 
-    if (_serverConn)
+    /* if (_serverConn)
         delete _serverConn;
+ */
 }
 
 void Server::setupServerSocket()
@@ -111,6 +113,7 @@ void Server::addServerToEpoll()
     _serverConn = new Connection();
     _serverConn->fd = _server_fd;
     _serverConn->isServer = true;
+    _connections[_server_fd] = _serverConn;
 
     ev.events = EPOLLIN;
     ev.data.ptr = _serverConn;
@@ -134,9 +137,12 @@ void Server::cleanup_connection(Connection* conn)
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
     shutdown(conn->fd, SHUT_RDWR);
     close(conn->fd);
-    
     _clientBuffers.erase(conn->fd);
-    delete conn;
+    std::map<int, Connection*>::iterator it = _connections.find(conn->fd);
+    if (it != _connections.end()) {
+        delete it->second;
+        _connections.erase(it);
+    }
 }
 
 void Server::handle_accept()
@@ -153,6 +159,7 @@ void Server::handle_accept()
     Connection* clientConn = new Connection();
     clientConn->fd = client_fd;
     clientConn->isServer = false;
+    _connections[client_fd] = clientConn;
 
     struct epoll_event ev;
     ev.events = EPOLLIN;
@@ -219,14 +226,11 @@ void Server::run()
 
 void Server::stop()
 {
-    for (std::map<int,std::string>::iterator it =
-         _clientBuffers.begin();
-         it != _clientBuffers.end(); ++it)
-    {
-        int fd = it->first;
-
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-        close(fd);
+    std::map<int, Connection*>::iterator it = _connections.begin();
+    while (it != _connections.end()) {
+        Connection* conn = it->second;
+        ++it; // Advance before erase
+        cleanup_connection(conn);
     }
 
     _clientBuffers.clear();
