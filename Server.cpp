@@ -14,13 +14,13 @@
 
 volatile sig_atomic_t g_keepRunning = 1;
 
-Server::Server() : _server_fd(-1), _port(0), epoll_fd(-1), _serverConn(NULL)
+Server::Server() : _server_fd(-1), _port(0), epoll_fd(-1), _serverConn(NULL), stopped(false)
 {
     std::memset(&_address, 0, sizeof(_address));
 }
 
 Server::Server(int port, const ServerConfig& config)
-    : _server_fd(-1), _port(port), epoll_fd(-1), config(config), _serverConn(NULL)
+    : _server_fd(-1), _port(port), epoll_fd(-1), config(config), _serverConn(NULL), stopped(false)
 {
     std::memset(&_address, 0, sizeof(_address));
 
@@ -37,6 +37,7 @@ Server::Server(const Server& other)
     _address = other._address;
     _clientBuffers = other._clientBuffers;
     config = other.config;
+    stopped = false;
 
     if (other._serverConn)
         _serverConn = new Connection(*other._serverConn);
@@ -54,6 +55,7 @@ Server& Server::operator=(const Server& other)
         _address = other._address;
         _clientBuffers = other._clientBuffers;
         config = other.config;
+        stopped = false;
 
         if (_serverConn)
             delete _serverConn;
@@ -132,6 +134,7 @@ void Server::cleanup_connection(Connection* conn)
     shutdown(conn->fd, SHUT_RDWR);
     close(conn->fd);
     _clientBuffers.erase(conn->fd);
+    _clientWriteBuffers.erase(conn->fd);
     std::map<int, Connection*>::iterator it = _connections.find(conn->fd);
     if (it != _connections.end()) {
         delete it->second;
@@ -182,7 +185,38 @@ void Server::handle_client(Connection* conn)
     {
         HttpRequest request = HttpRequest::parse(_clientBuffers[conn->fd]);
         std::string response = ResponseBuild::handle(request, config);
-        send(conn->fd, response.c_str(), response.size(), 0);
+        _clientWriteBuffers[conn->fd] = response;
+
+        // Modify epoll to watch for EPOLLOUT
+        struct epoll_event ev;
+        ev.events = EPOLLOUT;
+        ev.data.ptr = conn;
+        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+    }
+}
+
+void Server::handle_client_write(Connection* conn)
+{
+    std::map<int, std::string>::iterator it = _clientWriteBuffers.find(conn->fd);
+    if (it == _clientWriteBuffers.end()) {
+        // Nothing to write
+        return;
+    }
+    std::string& buffer = it->second;
+    ssize_t sent = send(conn->fd, buffer.c_str(), buffer.size(), 0);
+    if (sent < 0) {
+        // Error, cleanup
+        cleanup_connection(conn);
+        std::cout << "Send error, client disconnected\n";
+        _clientWriteBuffers.erase(it);
+        return;
+    }
+    if ((size_t)sent < buffer.size()) {
+        // Not all sent, keep remainder
+        buffer = buffer.substr(sent);
+    } else {
+        // All sent, cleanup write buffer and connection
+        _clientWriteBuffers.erase(it);
         std::cout << "Response sent\n";
         cleanup_connection(conn);
     }
@@ -210,16 +244,27 @@ void Server::run()
                 cleanup_connection(conn);
                 continue;
             }
-            if (conn->isServer)
+            if (conn->isServer) 
+            {
                 handle_accept();
-            else 
+            } 
+            else if (events[i].events & EPOLLOUT) 
+            {
+                handle_client_write(conn);
+            } 
+            else if (events[i].events & EPOLLIN) 
+            {
                 handle_client(conn);
+            }
         }
     }
 }
 
 void Server::stop()
 {
+    if (stopped) return;
+    stopped = true;
+
     std::map<int, Connection*>::iterator it = _connections.begin();
     while (it != _connections.end()) {
         Connection* conn = it->second;
