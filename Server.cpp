@@ -68,15 +68,7 @@ Server& Server::operator=(const Server& other)
 
 Server::~Server()
 {
-    if (_server_fd != -1)
-        close(_server_fd);
-
-    if (epoll_fd != -1)
-        close(epoll_fd);
-
-    /* if (_serverConn)
-        delete _serverConn;
- */
+    stop(); // Ensure all connections and FDs are cleaned up
 }
 
 void Server::setupServerSocket()
@@ -89,6 +81,8 @@ void Server::setupServerSocket()
     setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     int flags = fcntl(_server_fd, F_GETFL, 0);
+    if (flags == -1)
+        throw std::runtime_error("fcntl F_GETFL failed");
     fcntl(_server_fd, F_SETFL, flags | O_NONBLOCK);
 
     if (bind(_server_fd, (sockaddr*)&_address, sizeof(_address)) < 0)
