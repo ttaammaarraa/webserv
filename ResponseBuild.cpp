@@ -37,6 +37,7 @@ std::string ResponseBuild::handle(const HttpRequest& req, const ServerConfig &co
 	oss << "HTTP/1.1 200 OK\r\n";
 	oss << "Content-Length: " << body.size() << "\r\n";
 	oss << "Content-Type: " << contentType << "\r\n";
+	oss << "Connection: close\r\n";
 	oss << "\r\n";
 	oss << body;
 

@@ -1,10 +1,19 @@
 #include <vector>
 #include <iostream>
-#include <cassert>
+#include <csignal>
 #include "ServerConfig.hpp"
 #include "ConfigParser.hpp"
 #include "HttpRequest.hpp"
 #include "ResponseBuild.hpp"
+#include "Server.hpp"
+
+extern volatile sig_atomic_t g_keepRunning;
+
+void signalHandler(int signum)
+{
+    (void)signum;
+    g_keepRunning = 0;
+}
 
 int main(int argc, char **argv) 
 {
@@ -23,6 +32,7 @@ int main(int argc, char **argv)
         }
 
         ServerConfig config = ConfigParser::parse(configFile);
+        #ifdef DEBUG
         std::cout << "Port: " << config.port << std::endl;
         std::cout << "Host: " << config.host << std::endl;
         std::cout << "Root: " << config.root << std::endl;
@@ -49,6 +59,14 @@ int main(int argc, char **argv)
             std::string response = builder.handle(req, config);
             std::cout << response << "\n\n";
         }
+        #endif
+        Server server(config.port, config);
+        server.init();
+        
+        std::signal(SIGINT, signalHandler);
+        
+        server.run();
+        server.stop();
 
     }
     /*
