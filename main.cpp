@@ -15,6 +15,7 @@ void signalHandler(int signum)
     g_keepRunning = 0;
 }
 
+
 int main(int argc, char **argv) 
 {
     try 
