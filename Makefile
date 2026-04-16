@@ -1,7 +1,7 @@
 NAME		= webserv
 CXX 		= c++
 CXXFLAGS 	= -Wall -Wextra -Werror -std=c++98
-SRC 		= main.cpp ConfigParser.cpp HttpRequest.cpp ResponseBuild.cpp Server.cpp
+SRC 		= main.cpp ConfigParser.cpp HttpRequest.cpp ResponseBuilder.cpp Server.cpp
 OBJ 		= $(SRC:.cpp=.o)
 
 # For debug build: make DEBUG=1

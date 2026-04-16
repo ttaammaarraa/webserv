@@ -11,9 +11,9 @@ private:
 	static std::string getMimeType(const std::string& path);
 	static std::string readFile(const std::string& path);
 	static std::string buildErrorRes(int code, const ServerConfig& conf); 
-	static const std::map<std::string, std::string> mimeTypes;
 
 public:
+	static std::string handle(const HttpRequest& req, const ServerConfig &conf);
 	static void sendResponse(int client_fd ,const HttpRequest& req, const ServerConfig &conf);
 };
 

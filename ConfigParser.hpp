@@ -3,6 +3,7 @@
 
 #include "ServerConfig.hpp"
 #include <string>
+#include <fstream>
 
 class ConfigParser 
 {
@@ -13,6 +14,7 @@ class ConfigParser
                 static void handleHost(ServerConfig& config, std::istringstream& iss, int line_number);
                 static void handleRoot(ServerConfig& config, std::istringstream& iss, int line_number);
                 static void handleErrorPages(ServerConfig& config, std::istringstream& iss, int line_number);
+                static Location parseLocation(std::ifstream& file, int& line_number);
         public:
                 static ServerConfig parse(const std::string& filename);
 }; 
