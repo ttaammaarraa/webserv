@@ -21,11 +21,12 @@ struct ServerConfig
 {
     int port;
     std::string host;
+    std::string server_name;
     std::string root;
     std::map<int, std::string> error_pages;
     std::vector<Location> locations;
     
-    ServerConfig() : port(0), host(""), root("") {}
+    ServerConfig() : port(0), host(""), server_name(""), root("") {}
     
     const Location* matchLocation(const std::string& uri) const;
 };

@@ -1,6 +1,7 @@
 #include "Server.hpp"
 #include "HttpRequest.hpp"
 #include "ResponseBuilder.hpp"
+#include "ServerUtils.hpp"
 
 #include <csignal>
 #include <cstring>
@@ -8,154 +9,193 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
 #include <iostream>
 #include <unistd.h>
 #include <map>
+#include <utility>
 
 volatile sig_atomic_t g_keepRunning = 1;
 
-Server::Server() : _server_fd(-1), _port(0), epoll_fd(-1), _serverConn(NULL), stopped(false)
-{
-    std::memset(&_address, 0, sizeof(_address));
-}
+Server::Server() : epoll_fd(-1), stopped(false) {}
 
-Server::Server(int port, const ServerConfig& config)
-    : _server_fd(-1), _port(port), epoll_fd(-1), config(config), _serverConn(NULL), stopped(false)
-{
-    std::memset(&_address, 0, sizeof(_address));
-
-    _address.sin_family = AF_INET;
-    _address.sin_addr.s_addr = INADDR_ANY;
-    _address.sin_port = htons(_port);
-}
-
-Server::Server(const Server& other)
-{
-    _server_fd = other._server_fd;
-    _port = other._port;
-    epoll_fd = other.epoll_fd;
-    _address = other._address;
-    _clientBuffers = other._clientBuffers;
-    config = other.config;
-    stopped = false;
-
-    if (other._serverConn)
-        _serverConn = new Connection(*other._serverConn);
-    else
-        _serverConn = NULL;
-}
-
-Server& Server::operator=(const Server& other)
-{
-    if (this != &other)
-    {
-        _server_fd = other._server_fd;
-        _port = other._port;
-        epoll_fd = other.epoll_fd;
-        _address = other._address;
-        _clientBuffers = other._clientBuffers;
-        config = other.config;
-        stopped = false;
-
-        if (_serverConn)
-            delete _serverConn;
-
-        if (other._serverConn)
-            _serverConn = new Connection(*other._serverConn);
-        else
-            _serverConn = NULL;
-    }
-    return *this;
-}
+Server::Server(const std::vector<ServerConfig>& configs) : _allConfigs(configs), epoll_fd(-1), stopped(false) {}
 
 Server::~Server()
 {
-    stop(); // Ensure all connections and FDs are cleaned up
-}
-
-void Server::setupServerSocket()
-{
-    _server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (_server_fd < 0)
-        throw std::runtime_error("socket failed");
-
-    int opt = 1;
-    setsockopt(_server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    int flags = fcntl(_server_fd, F_GETFL, 0);
-    if (flags == -1)
-        throw std::runtime_error("fcntl F_GETFL failed");
-    fcntl(_server_fd, F_SETFL, flags | O_NONBLOCK);
-
-    if (bind(_server_fd, (sockaddr*)&_address, sizeof(_address)) < 0)
-        throw std::runtime_error("bind failed");
-
-    if (listen(_server_fd, 128) < 0)
-        throw std::runtime_error("listen failed");
+    stop();
 }
 
 void Server::setupEpoll()
 {
     epoll_fd = epoll_create1(0);
-
     if (epoll_fd == -1)
         throw std::runtime_error("epoll_create1 failed");
 }
 
-void Server::addServerToEpoll()
+void Server::buildListenerGroups(std::map< std::pair<int, std::string>, std::vector<ServerConfig> >& groups) const
+{
+    for (size_t i = 0; i < _allConfigs.size(); ++i)
+    {
+        std::pair<int, std::string> key(_allConfigs[i].port, _allConfigs[i].host);
+        groups[key].push_back(_allConfigs[i]);
+    }
+}
+
+void Server::addServerToEpoll(int serverFd, int port)
 {
     struct epoll_event ev;
+    Connection* serverConn = new Connection();
+    serverConn->fd = serverFd;
+    serverConn->isServer = true;
+    serverConn->port = port;
+    serverConn->serverConfigs = &_listenerConfigsByFd[serverFd];
 
-    _serverConn = new Connection();
-    _serverConn->fd = _server_fd;
-    _serverConn->isServer = true;
-    _connections[_server_fd] = _serverConn;
-
+    _connections[serverFd] = serverConn;
     ev.events = EPOLLIN;
-    ev.data.ptr = _serverConn;
+    ev.data.ptr = serverConn;
 
-    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, _server_fd, &ev);
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, serverFd, &ev) < 0)
+    {
+        _connections.erase(serverFd);
+        delete serverConn;
+        close(serverFd);
+        _listenerConfigsByFd.erase(serverFd);
+        throw std::runtime_error("epoll_ctl add listener failed");
+    }
+}
+
+bool Server::setupListeningSocket(const std::string& host, int port, const std::vector<ServerConfig>& serverConfigs)
+{
+    int serverFd = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverFd < 0)
+    {
+        std::cerr << "[warn] socket failed for " << host << ":" << port << std::endl;
+        return false;
+    }
+
+    int opt = 1;
+    setsockopt(serverFd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    int flags = fcntl(serverFd, F_GETFL, 0);
+    if (flags == -1)
+    {
+        close(serverFd);
+        std::cerr << "[warn] fcntl F_GETFL failed for " << host << ":" << port << std::endl;
+        return false;
+    }
+
+    if (fcntl(serverFd, F_SETFL, flags | O_NONBLOCK) < 0)
+    {
+        close(serverFd);
+        std::cerr << "[warn] fcntl F_SETFL failed for " << host << ":" << port << std::endl;
+        return false;
+    }
+
+    sockaddr_in address;
+    std::memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    if (host == "127.0.0.1" || host == "localhost")
+        address.sin_addr.s_addr = inet_addr("127.0.0.1");
+    else
+        address.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(serverFd, (sockaddr*)&address, sizeof(address)) < 0)
+    {
+        std::cerr << "[warn] bind failed for " << host << ":" << port << std::endl;
+        close(serverFd);
+        return false;
+    }
+
+    if (listen(serverFd, 128) < 0)
+    {
+        std::cerr << "[warn] listen failed for " << host << ":" << port << std::endl;
+        close(serverFd);
+        return false;
+    }
+
+    _listenerConfigsByFd[serverFd] = serverConfigs;
+    addServerToEpoll(serverFd, port);
+
+    std::cout << "Server started on " << host << ":" << port << std::endl;
+    return true;
 }
 
 void Server::init()
 {
-    setupServerSocket();
-    setupEpoll();
-    addServerToEpoll();
+    if (_allConfigs.empty())
+        throw std::runtime_error("No server blocks were provided");
 
-    std::cout << "Server started on port " << _port << std::endl;
+    setupEpoll();
+
+    std::map< std::pair<int, std::string>, std::vector<ServerConfig> > groups;
+    buildListenerGroups(groups);
+
+    int createdListeners = 0;
+    std::map< std::pair<int, std::string>, std::vector<ServerConfig> >::iterator it;
+    for (it = groups.begin(); it != groups.end(); ++it)
+    {
+        if (setupListeningSocket(it->first.second, it->first.first, it->second))
+            ++createdListeners;
+    }
+
+    if (createdListeners == 0)
+        throw std::runtime_error("No listening sockets could be created");
 }
 
 void Server::cleanup_connection(Connection* conn)
 {
     if (!conn) return;
 
-    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-    shutdown(conn->fd, SHUT_RDWR);
-    close(conn->fd);
-    _clientBuffers.erase(conn->fd);
-    _clientWriteBuffers.erase(conn->fd);
-    std::map<int, Connection*>::iterator it = _connections.find(conn->fd);
-    if (it != _connections.end()) {
+    int fd = conn->fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+    close(fd);
+
+    if (!conn->isServer)
+    {
+        _clientBuffers.erase(fd);
+        _clientWriteBuffers.erase(fd);
+    }
+    else
+    {
+        _listenerConfigsByFd.erase(fd);
+    }
+
+    std::map<int, Connection*>::iterator it = _connections.find(fd);
+    if (it != _connections.end())
+    {
         delete it->second;
         _connections.erase(it);
     }
 }
 
-void Server::handle_accept()
+void Server::handle_accept(Connection* serverConn)
 {
     sockaddr_in client_addr;
     socklen_t addrlen = sizeof(client_addr);
-    int client_fd = accept(_server_fd, (sockaddr*)&client_addr, &addrlen);
+    int client_fd = accept(serverConn->fd, (sockaddr*)&client_addr, &addrlen);
 
     if (client_fd < 0) return;
 
     int flags = fcntl(client_fd, F_GETFL, 0);
-    fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
+    if (flags < 0)
+    {
+        close(client_fd);
+        return;
+    }
+
+    if (fcntl(client_fd, F_SETFL, flags | O_NONBLOCK) < 0)
+    {
+        close(client_fd);
+        return;
+    }
 
     Connection* clientConn = new Connection();
     clientConn->fd = client_fd;
     clientConn->isServer = false;
+    clientConn->port = serverConn->port;
+    clientConn->serverConfigs = serverConn->serverConfigs;
     _connections[client_fd] = clientConn;
 
     struct epoll_event ev;
@@ -183,11 +223,20 @@ void Server::handle_client(Connection* conn)
     size_t header_end = _clientBuffers[conn->fd].find("\r\n\r\n");
     if (header_end != std::string::npos)
     {
+        if (!conn->serverConfigs)
+        {
+            cleanup_connection(conn);
+            return;
+        }
+
+        std::string hostHeader = ServerUtils::extractHostFromRawRequest(_clientBuffers[conn->fd]);
+        ServerConfig& selected = ServerUtils::matchServer(hostHeader, conn->port, *conn->serverConfigs);
+
         HttpRequest request = HttpRequest::parse(_clientBuffers[conn->fd]);
-        std::string response = ResponseBuild::handle(request, config);
+
+        std::string response = ResponseBuild::handle(request, selected);
         _clientWriteBuffers[conn->fd] = response;
 
-        // Modify epoll to watch for EPOLLOUT
         struct epoll_event ev;
         ev.events = EPOLLOUT;
         ev.data.ptr = conn;
@@ -246,7 +295,7 @@ void Server::run()
             }
             if (conn->isServer) 
             {
-                handle_accept();
+                handle_accept(conn);
             } 
             else if (events[i].events & EPOLLOUT) 
             {
@@ -268,17 +317,13 @@ void Server::stop()
     std::map<int, Connection*>::iterator it = _connections.begin();
     while (it != _connections.end()) {
         Connection* conn = it->second;
-        ++it; // Advance before erase
+        ++it;
         cleanup_connection(conn);
     }
 
     _clientBuffers.clear();
-
-    if (_server_fd != -1)
-    {
-        close(_server_fd);
-        _server_fd = -1;
-    }
+    _clientWriteBuffers.clear();
+    _listenerConfigsByFd.clear();
 
     if (epoll_fd != -1)
     {

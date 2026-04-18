@@ -31,40 +31,14 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        ServerConfig config = ConfigParser::parse(configFile);
-        #ifdef DEBUG
-        std::cout << "Port: " << config.port << std::endl;
-        std::cout << "Host: " << config.host << std::endl;
-        std::cout << "Root: " << config.root << std::endl;
-        for (std::map<int, std::string>::iterator it = config.error_pages.begin(); it != config.error_pages.end(); ++it) 
-            std::cout << "Error page " << it->first << ": " << it->second << std::endl;
-        ResponseBuild builder;
+        std::vector<ServerConfig> configs = ConfigParser::parse(configFile);
+        if (configs.empty())
+            throw std::runtime_error("No server blocks were parsed from the configuration file");
 
-        std::vector<std::string> testPaths;
-            testPaths.push_back("/index.html"); //  200 OK
-             testPaths.push_back("/doesnotexist.html") ;//  404
-             testPaths.push_back("/../etc/passwd"); //  403
-             testPaths.push_back("/forbidden.html"); //read permission → 403 ((need to do this to the file:chmod 000 www/forbidden.html))
-             testPaths.push_back("/folder/"); // directory → index.html
-
-        for (size_t i = 0; i < testPaths.size(); ++i)
-        {
-            std::string path = testPaths[i];
-            HttpRequest req;
-            req.setMethod("GET");
-            req.setPath(path);
-            req.setVersion("HTTP/1.1");
-
-            std::cout << "===== Testing path: " << path << " =====\n";
-            std::string response = builder.handle(req, config);
-            std::cout << response << "\n\n";
-        }
-        #endif
-        Server server(config.port, config);
+        Server server(configs);
         server.init();
-        
+
         std::signal(SIGINT, signalHandler);
-        
         server.run();
         server.stop();
 
