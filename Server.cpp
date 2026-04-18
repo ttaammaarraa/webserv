@@ -1,7 +1,6 @@
 #include "Server.hpp"
 #include "HttpRequest.hpp"
 #include "ResponseBuilder.hpp"
-#include "ServerUtils.hpp"
 
 #include <csignal>
 #include <cstring>
@@ -33,23 +32,23 @@ void Server::setupEpoll()
         throw std::runtime_error("epoll_create1 failed");
 }
 
-void Server::buildListenerGroups(std::map< std::pair<int, std::string>, std::vector<ServerConfig> >& groups) const
+void Server::buildListenerGroups(std::map< std::pair<int, std::string>, ServerConfig >& groups) const
 {
     for (size_t i = 0; i < _allConfigs.size(); ++i)
     {
         std::pair<int, std::string> key(_allConfigs[i].port, _allConfigs[i].host);
-        groups[key].push_back(_allConfigs[i]);
+        if (groups.find(key) == groups.end())
+            groups[key] = _allConfigs[i];
     }
 }
 
-void Server::addServerToEpoll(int serverFd, int port)
+void Server::addServerToEpoll(int serverFd)
 {
     struct epoll_event ev;
     Connection* serverConn = new Connection();
     serverConn->fd = serverFd;
     serverConn->isServer = true;
-    serverConn->port = port;
-    serverConn->serverConfigs = &_listenerConfigsByFd[serverFd];
+    serverConn->serverConfig = &_listenerConfigsByFd[serverFd];
 
     _connections[serverFd] = serverConn;
     ev.events = EPOLLIN;
@@ -65,8 +64,11 @@ void Server::addServerToEpoll(int serverFd, int port)
     }
 }
 
-bool Server::setupListeningSocket(const std::string& host, int port, const std::vector<ServerConfig>& serverConfigs)
+bool Server::setupListeningSocket(const ServerConfig& serverConfig)
 {
+    const std::string& host = serverConfig.host;
+    int port = serverConfig.port;
+
     int serverFd = socket(AF_INET, SOCK_STREAM, 0);
     if (serverFd < 0)
     {
@@ -115,8 +117,8 @@ bool Server::setupListeningSocket(const std::string& host, int port, const std::
         return false;
     }
 
-    _listenerConfigsByFd[serverFd] = serverConfigs;
-    addServerToEpoll(serverFd, port);
+    _listenerConfigsByFd[serverFd] = serverConfig;
+    addServerToEpoll(serverFd);
 
     std::cout << "Server started on " << host << ":" << port << std::endl;
     return true;
@@ -129,14 +131,14 @@ void Server::init()
 
     setupEpoll();
 
-    std::map< std::pair<int, std::string>, std::vector<ServerConfig> > groups;
+    std::map< std::pair<int, std::string>, ServerConfig > groups;
     buildListenerGroups(groups);
 
     int createdListeners = 0;
-    std::map< std::pair<int, std::string>, std::vector<ServerConfig> >::iterator it;
+    std::map< std::pair<int, std::string>, ServerConfig >::iterator it;
     for (it = groups.begin(); it != groups.end(); ++it)
     {
-        if (setupListeningSocket(it->first.second, it->first.first, it->second))
+        if (setupListeningSocket(it->second))
             ++createdListeners;
     }
 
@@ -194,8 +196,7 @@ void Server::handle_accept(Connection* serverConn)
     Connection* clientConn = new Connection();
     clientConn->fd = client_fd;
     clientConn->isServer = false;
-    clientConn->port = serverConn->port;
-    clientConn->serverConfigs = serverConn->serverConfigs;
+    clientConn->serverConfig = serverConn->serverConfig;
     _connections[client_fd] = clientConn;
 
     struct epoll_event ev;
@@ -223,18 +224,15 @@ void Server::handle_client(Connection* conn)
     size_t header_end = _clientBuffers[conn->fd].find("\r\n\r\n");
     if (header_end != std::string::npos)
     {
-        if (!conn->serverConfigs)
+        if (!conn->serverConfig)
         {
             cleanup_connection(conn);
             return;
         }
 
-        std::string hostHeader = ServerUtils::extractHostFromRawRequest(_clientBuffers[conn->fd]);
-        ServerConfig& selected = ServerUtils::matchServer(hostHeader, conn->port, *conn->serverConfigs);
-
         HttpRequest request = HttpRequest::parse(_clientBuffers[conn->fd]);
 
-        std::string response = ResponseBuild::handle(request, selected);
+        std::string response = ResponseBuild::handle(request, *conn->serverConfig);
         _clientWriteBuffers[conn->fd] = response;
 
         struct epoll_event ev;

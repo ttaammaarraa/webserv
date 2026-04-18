@@ -11,10 +11,9 @@ struct Connection
 {
     int fd;
     bool isServer;
-    int port;
-    std::vector<ServerConfig>* serverConfigs;
+    ServerConfig* serverConfig;
 
-    Connection() : fd(-1), isServer(false), port(0), serverConfigs(NULL) {}
+    Connection() : fd(-1), isServer(false), serverConfig(NULL) {}
 };
 
 class Server
@@ -25,15 +24,15 @@ class Server
         std::map<int, std::string> _clientBuffers;
         std::map<int, std::string> _clientWriteBuffers;
         std::map<int, Connection*> _connections;
-        std::map<int, std::vector<ServerConfig> > _listenerConfigsByFd;
+        std::map<int, ServerConfig> _listenerConfigsByFd;
         void cleanup_connection(Connection* conn);
         void handle_accept(Connection* serverConn);
         void handle_client(Connection* conn);
         void handle_client_write(Connection* conn);
         void setupEpoll();
-        bool setupListeningSocket(const std::string& host, int port, const std::vector<ServerConfig>& serverConfigs);
-        void addServerToEpoll(int serverFd, int port);
-        void buildListenerGroups(std::map< std::pair<int, std::string>, std::vector<ServerConfig> >& groups) const;
+        bool setupListeningSocket(const ServerConfig& serverConfig);
+        void addServerToEpoll(int serverFd);
+        void buildListenerGroups(std::map< std::pair<int, std::string>, ServerConfig >& groups) const;
         bool stopped;
 
         Server(const Server& other);

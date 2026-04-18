@@ -5,10 +5,10 @@
 #include <vector>
 #include "ServerConfig.hpp"
 
-namespace ServerUtils
+class ServerUtils
 {
-    std::string extractHostFromRawRequest(const std::string& rawRequest);
-    ServerConfig& matchServer(const std::string& hostHeader, int port, std::vector<ServerConfig>& configs);
-}
+    public:
+        static ServerConfig& matchServer(int port, std::vector<ServerConfig>& configs);
+};
 
 #endif
