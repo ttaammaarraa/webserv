@@ -14,6 +14,18 @@
 
 volatile sig_atomic_t g_keepRunning = 1;
 
+Connection::Connection()
+        : fd(-1),
+          isServer(false),
+          last_activity(time(NULL)),
+          isCGI(false),
+          isCGIConn(false),
+          cgi_fd(-1),
+          stream_fd(-1),
+          isStreaming(false),
+          stream_offset(0)
+    {}
+
 Server::Server() : _server_fd(-1), _port(0), epoll_fd(-1), _serverConn(NULL), stopped(false)
 {
     std::memset(&_address, 0, sizeof(_address));
@@ -71,6 +83,27 @@ Server& Server::operator=(const Server& other)
 Server::~Server()
 {
     stop(); // Ensure all connections and FDs are cleaned up
+}
+
+void Server::check_timeouts()
+{
+    time_t now = time(NULL);
+
+    std::map<int, Connection*>::iterator it = _connections.begin();
+    while (it != _connections.end())
+    {
+        Connection* conn = it->second;
+        ++it;
+
+        if (conn->isServer)
+            continue;
+
+        if (now - conn->last_activity > CLIENT_TIMEOUT)
+        {
+            std::cout << "Client timeout\n";
+            cleanup_connection(conn);
+        }
+    }
 }
 
 void Server::setupServerSocket()
@@ -133,6 +166,10 @@ void Server::cleanup_connection(Connection* conn)
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
     shutdown(conn->fd, SHUT_RDWR);
     close(conn->fd);
+    if (conn->isCGIConn)
+    {
+        close(conn->fd);
+    }
     _clientBuffers.erase(conn->fd);
     _clientWriteBuffers.erase(conn->fd);
     std::map<int, Connection*>::iterator it = _connections.find(conn->fd);
@@ -147,7 +184,7 @@ void Server::handle_accept()
     sockaddr_in client_addr;
     socklen_t addrlen = sizeof(client_addr);
     int client_fd = accept(_server_fd, (sockaddr*)&client_addr, &addrlen);
-
+    
     if (client_fd < 0) return;
 
     int flags = fcntl(client_fd, F_GETFL, 0);
@@ -156,6 +193,7 @@ void Server::handle_accept()
     Connection* clientConn = new Connection();
     clientConn->fd = client_fd;
     clientConn->isServer = false;
+    clientConn->last_activity = time(NULL); //*2*//
     _connections[client_fd] = clientConn;
 
     struct epoll_event ev;
@@ -169,9 +207,11 @@ void Server::handle_accept()
 
 void Server::handle_client(Connection* conn)
 {
+    conn->last_activity = time(NULL);//2
+
     char buffer[4096];
     int bytes = recv(conn->fd, buffer, sizeof(buffer), 0);
-
+    
     if (bytes <= 0)
     {
         cleanup_connection(conn);
@@ -184,9 +224,40 @@ void Server::handle_client(Connection* conn)
     if (header_end != std::string::npos)
     {
         HttpRequest request = HttpRequest::parse(_clientBuffers[conn->fd]);
-        std::string response = ResponseBuild::handle(request, config);
-        _clientWriteBuffers[conn->fd] = response;
 
+        if (request.path.find("/cgi") != std::string::npos)
+        {
+            conn->isCGI = true;
+            start_cgi(conn, "./cgi_script");
+            return;
+        }
+        std::string filePath = "." + request.path;
+
+        if (filePath == "./")
+            filePath = "./index.html";
+
+        int file_fd = open(filePath.c_str(), O_RDONLY);
+
+        if (file_fd < 0)
+        {
+            std::string response = 
+                "HTTP/1.1 404 Not Found\r\n"
+                "Content-Type: text/plain\r\n\r\n"
+                "File not found";
+
+            _clientWriteBuffers[conn->fd] = response;
+        }
+        else
+        {
+            std::string headers =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: text/html\r\n\r\n";
+
+            _clientWriteBuffers[conn->fd] = headers;
+
+            conn->stream_fd = file_fd;
+            conn->isStreaming = true;
+        }
         // Modify epoll to watch for EPOLLOUT
         struct epoll_event ev;
         ev.events = EPOLLOUT;
@@ -197,28 +268,66 @@ void Server::handle_client(Connection* conn)
 
 void Server::handle_client_write(Connection* conn)
 {
+    conn->last_activity = time(NULL);
+
     std::map<int, std::string>::iterator it = _clientWriteBuffers.find(conn->fd);
-    if (it == _clientWriteBuffers.end()) {
-        // Nothing to write
-        return;
-    }
-    std::string& buffer = it->second;
-    ssize_t sent = send(conn->fd, buffer.c_str(), buffer.size(), 0);
-    if (sent < 0) {
-        // Error, cleanup
-        cleanup_connection(conn);
-        std::cout << "Send error, client disconnected\n";
+    if (it != _clientWriteBuffers.end())
+    {
+        std::string& buffer = it->second;
+
+        ssize_t sent = send(conn->fd, buffer.c_str(), buffer.size(), 0);
+
+        if (sent < 0)
+        {
+            cleanup_connection(conn);
+            _clientWriteBuffers.erase(it);
+            return;
+        }
+
+        if ((size_t)sent < buffer.size())
+        {
+            buffer = buffer.substr(sent);
+            return;
+        }
+
+        
         _clientWriteBuffers.erase(it);
-        return;
+
+        if (!conn->isStreaming)
+        {
+            cleanup_connection(conn);
+            return;
+        }
     }
-    if ((size_t)sent < buffer.size()) {
-        // Not all sent, keep remainder
-        buffer = buffer.substr(sent);
-    } else {
-        // All sent, cleanup write buffer and connection
-        _clientWriteBuffers.erase(it);
-        std::cout << "Response sent\n";
-        cleanup_connection(conn);
+
+    //Streaming 
+    if (conn->isStreaming)
+    {
+        char buffer[4096];
+
+        int bytes = read(conn->stream_fd, buffer, sizeof(buffer));
+
+        if (bytes <= 0)
+        {
+            close(conn->stream_fd);
+            conn->isStreaming = false;
+            conn->stream_offset = 0; // reset 
+            std::cout << "File sent\n";
+            cleanup_connection(conn);
+            return;
+        }
+
+        ssize_t sent = send(conn->fd, buffer, bytes, 0);
+
+        if (sent <= 0)
+        {
+            close(conn->stream_fd);
+            cleanup_connection(conn);
+            return;
+        }
+
+        // offset tracking (important for robustness)
+        conn->stream_offset += sent;
     }
 }
 
@@ -228,10 +337,14 @@ void Server::run()
 
     while (g_keepRunning)
     {
+        check_timeouts();
+
         int nfds = epoll_wait(epoll_fd, events, 1024, 1000);
+
         if (nfds < 0)
         {
-            if (errno == EINTR) continue;
+            if (errno == EINTR)
+                continue;
             throw std::runtime_error("epoll_wait failed");
         }
 
@@ -244,20 +357,90 @@ void Server::run()
                 cleanup_connection(conn);
                 continue;
             }
-            if (conn->isServer) 
+
+            // SERVER SOCKET
+            if (conn->isServer)
             {
                 handle_accept();
-            } 
-            else if (events[i].events & EPOLLOUT) 
+            }
+
+            // CGI PIPE
+            else if (conn->isCGI)
+            {
+                handle_cgi(conn);
+            }
+
+            // CLIENT WRITE (sending response)
+            else if (events[i].events & EPOLLOUT)
             {
                 handle_client_write(conn);
-            } 
-            else if (events[i].events & EPOLLIN) 
+            }
+
+            // CLIENT READ
+            else if (events[i].events & EPOLLIN)
             {
                 handle_client(conn);
             }
         }
     }
+}
+void Server::start_cgi(Connection* clientConn, std::string path)
+{
+    int pipefd[2];
+    if (pipe(pipefd) < 0)
+        return;
+
+    pid_t pid = fork();
+
+    if (pid == 0)
+    {
+        // CHILD (CGI process)
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[0]);
+
+        char *args[] = {(char*)path.c_str(), NULL};
+
+        execve(path.c_str(), args, NULL);
+
+        exit(1);
+    }
+    else
+    {
+        // PARENT (server)
+        close(pipefd[1]);
+
+        Connection* cgiConn = new Connection();
+
+        cgiConn->fd = pipefd[0];
+        cgiConn->isCGI = true;
+        cgiConn->isServer = false;
+        cgiConn->isCGIConn = true;
+
+        _connections[cgiConn->fd] = cgiConn;
+
+        struct epoll_event ev;
+        ev.events = EPOLLIN;
+        ev.data.ptr = cgiConn;
+
+        epoll_ctl(epoll_fd, EPOLL_CTL_ADD, cgiConn->fd, &ev);
+
+        clientConn->isCGI = true;
+    }
+}
+
+void Server::handle_cgi(Connection* conn)
+{
+    conn->last_activity = time(NULL);
+    char buffer[4096];
+    int bytes = read(conn->fd, buffer, sizeof(buffer));
+
+    if (bytes <= 0)
+    {
+        cleanup_connection(conn);
+        return;
+    }
+
+    send(conn->fd, buffer, bytes, 0);
 }
 
 void Server::stop()

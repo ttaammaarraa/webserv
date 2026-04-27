@@ -6,10 +6,27 @@
 #include <string>
 #include "ServerConfig.hpp"
 
+#define CLIENT_TIMEOUT 60
+
 struct Connection
 {
     int fd;
     bool isServer;
+
+    // ⭐ Task 2: timeout
+    time_t last_activity;
+
+    // ⭐ Task 1: CGI
+    bool isCGI;
+    int cgi_fd;
+    int cgi_pipe[2];
+    bool isCGIConn;
+
+    // ⭐ Task 3: streaming
+    int stream_fd;
+    bool isStreaming;
+    size_t stream_offset;
+
 };
 
 class Server
@@ -32,6 +49,9 @@ class Server
         void setupServerSocket();
         void setupEpoll();
         void addServerToEpoll();
+        void check_timeouts();
+        void start_cgi(Connection* conn, std::string path);
+        void handle_cgi(Connection* conn);
         bool stopped;
     
     public:
