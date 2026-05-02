@@ -5,15 +5,29 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <ctime>
 #include "ServerConfig.hpp"
+
+#define CLIENT_TIMEOUT 60
 
 struct Connection
 {
     int fd;
     bool isServer;
     ServerConfig* serverConfig;
+    
+    // ⭐ Razan's Additions (Merged)
+    time_t last_activity;
+    
+    // CGI & Streaming placeholders
+    bool isCGI;
+    int client_fd; // Fix: To remember who requested the CGI!
+    bool isStreaming;
+    int stream_fd;
 
-    Connection() : fd(-1), isServer(false), serverConfig(NULL) {}
+    Connection() : fd(-1), isServer(false), serverConfig(NULL), 
+                   last_activity(time(NULL)), isCGI(false), 
+                   client_fd(-1), isStreaming(false), stream_fd(-1) {}
 };
 
 class Server
@@ -25,6 +39,7 @@ class Server
         std::map<int, std::string> _clientWriteBuffers;
         std::map<int, Connection*> _connections;
         std::map<int, ServerConfig> _listenerConfigsByFd;
+        
         void cleanup_connection(Connection* conn);
         void handle_accept(Connection* serverConn);
         void handle_client(Connection* conn);
@@ -33,6 +48,10 @@ class Server
         bool setupListeningSocket(const ServerConfig& serverConfig);
         void addServerToEpoll(int serverFd);
         void buildListenerGroups(std::map< std::pair<int, std::string>, ServerConfig >& groups) const;
+        
+        // ⭐ Razan's Timeout Function
+        void check_timeouts();
+        
         bool stopped;
 
         Server(const Server& other);

@@ -172,6 +172,28 @@ void Server::cleanup_connection(Connection* conn)
     }
 }
 
+// ⭐ Razan's Timeout logic (Cleaned up)
+void Server::check_timeouts()
+{
+    time_t now = time(NULL);
+    std::map<int, Connection*>::iterator it = _connections.begin();
+    
+    while (it != _connections.end())
+    {
+        Connection* conn = it->second;
+        std::map<int, Connection*>::iterator current = it++; // Advance before modifying map
+
+        if (conn->isServer)
+            continue;
+
+        if (now - conn->last_activity > CLIENT_TIMEOUT)
+        {
+            std::cout << "[Timeout] Client disconnected automatically\n";
+            cleanup_connection(conn);
+        }
+    }
+}
+
 void Server::handle_accept(Connection* serverConn)
 {
     sockaddr_in client_addr;
@@ -197,6 +219,8 @@ void Server::handle_accept(Connection* serverConn)
     clientConn->fd = client_fd;
     clientConn->isServer = false;
     clientConn->serverConfig = serverConn->serverConfig;
+    clientConn->last_activity = time(NULL); // ⭐ Track time
+    
     _connections[client_fd] = clientConn;
 
     struct epoll_event ev;
@@ -210,6 +234,8 @@ void Server::handle_accept(Connection* serverConn)
 
 void Server::handle_client(Connection* conn)
 {
+    conn->last_activity = time(NULL); // ⭐ Update time on read
+
     char buffer[4096];
     int bytes = recv(conn->fd, buffer, sizeof(buffer), 0);
 
@@ -231,6 +257,9 @@ void Server::handle_client(Connection* conn)
         }
 
         HttpRequest request = HttpRequest::parse(_clientBuffers[conn->fd]);
+        
+        // ⭐ Future task for Razan: Add Routing Matcher here before calling ResponseBuilder
+        // const Location* loc = conn->serverConfig->matchLocation(request.getPath());
 
         std::string response = ResponseBuild::handle(request, *conn->serverConfig);
         _clientWriteBuffers[conn->fd] = response;
@@ -244,25 +273,23 @@ void Server::handle_client(Connection* conn)
 
 void Server::handle_client_write(Connection* conn)
 {
+    conn->last_activity = time(NULL); // ⭐ Update time on write
+
     std::map<int, std::string>::iterator it = _clientWriteBuffers.find(conn->fd);
     if (it == _clientWriteBuffers.end()) {
-        // Nothing to write
         return;
     }
     std::string& buffer = it->second;
     ssize_t sent = send(conn->fd, buffer.c_str(), buffer.size(), 0);
     if (sent < 0) {
-        // Error, cleanup
         cleanup_connection(conn);
         std::cout << "Send error, client disconnected\n";
         _clientWriteBuffers.erase(it);
         return;
     }
     if ((size_t)sent < buffer.size()) {
-        // Not all sent, keep remainder
         buffer = buffer.substr(sent);
     } else {
-        // All sent, cleanup write buffer and connection
         _clientWriteBuffers.erase(it);
         std::cout << "Response sent\n";
         cleanup_connection(conn);
@@ -275,6 +302,8 @@ void Server::run()
 
     while (g_keepRunning)
     {
+        check_timeouts(); // ⭐ Check timeouts in every loop
+
         int nfds = epoll_wait(epoll_fd, events, 1024, 1000);
         if (nfds < 0)
         {
@@ -295,6 +324,11 @@ void Server::run()
             {
                 handle_accept(conn);
             } 
+            else if (conn->isCGI) 
+            {
+                // ⭐ Placeholder for CGI logic
+                // handle_cgi(conn);
+            }
             else if (events[i].events & EPOLLOUT) 
             {
                 handle_client_write(conn);
