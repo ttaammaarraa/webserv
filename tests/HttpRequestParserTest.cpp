@@ -1,4 +1,4 @@
-#include "../HttpRequest.hpp"
+#include "HttpRequest.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -41,7 +41,7 @@ static void test_transfer_encoding_without_content_length()
 
     assert(req.getMethod() == "POST");
     assert(req.getPath() == "/u");
-    assert(req.getBody().empty());
+    assert(req.getBody() == "Wikipedia");
 }
 
 int main()

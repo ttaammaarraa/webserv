@@ -181,7 +181,7 @@ void Server::check_timeouts()
     while (it != _connections.end())
     {
         Connection* conn = it->second;
-        std::map<int, Connection*>::iterator current = it++; // Advance before modifying map
+        ++it; // Advance before potentially modifying _connections
 
         if (conn->isServer)
             continue;
