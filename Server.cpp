@@ -2,6 +2,7 @@
 #include "HttpRequest.hpp"
 #include "ResponseBuild.hpp"
 
+#include <cstdlib>
 #include <csignal>
 #include <cstring>
 #include <errno.h>
@@ -14,13 +15,14 @@
 
 volatile sig_atomic_t g_keepRunning = 1;
 
+
 Connection::Connection()
         : fd(-1),
           isServer(false),
           last_activity(time(NULL)),
           isCGI(false),
-          isCGIConn(false),
           cgi_fd(-1),
+                    isCGIConn(false),
           stream_fd(-1),
           isStreaming(false),
           stream_offset(0)

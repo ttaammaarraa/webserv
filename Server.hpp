@@ -10,6 +10,8 @@
 
 struct Connection
 {
+    Connection();
+
     int fd;
     bool isServer;
 
