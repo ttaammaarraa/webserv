@@ -25,9 +25,15 @@ struct Connection
     bool isStreaming;
     int stream_fd;
 
+    // ⭐ File Streaming State Variables
+    int file_fd;
+    size_t file_size;
+    size_t bytes_sent;
+
     Connection() : fd(-1), isServer(false), serverConfig(NULL), 
                    last_activity(time(NULL)), isCGI(false), 
-                   client_fd(-1), isStreaming(false), stream_fd(-1) {}
+                   client_fd(-1), isStreaming(false), stream_fd(-1),
+                   file_fd(-1), file_size(0), bytes_sent(0) {}
 };
 
 class Server

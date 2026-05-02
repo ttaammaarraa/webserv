@@ -10,8 +10,8 @@ OBJ 		= $(SRC:.cpp=.o)
 TEST_BODY_NAME	= tests/http_request_body_test
 TEST_PARSER_NAME	= tests/http_request_parser_test
 TEST_CHUNKED_NAME	= tests/chunked_parser_test
-TEST_BODY_OBJ	= tests/HttpRequestBodyTest.o src/HttpRequest.o
-TEST_PARSER_OBJ	= tests/HttpRequestParserTest.o src/HttpRequest.o
+TEST_BODY_OBJ	= tests/HttpRequestBodyTest.o src/HttpRequest.o src/ChunkedBodyParser.o
+TEST_PARSER_OBJ	= tests/HttpRequestParserTest.o src/HttpRequest.o src/ChunkedBodyParser.o
 TEST_CHUNKED_OBJ	= tests/ChunkedParserTest.o src/ChunkedBodyParser.o
 
 

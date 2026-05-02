@@ -258,10 +258,20 @@ void Server::handle_client(Connection* conn)
 
         HttpRequest request = HttpRequest::parse(_clientBuffers[conn->fd]);
         
-        // ⭐ Future task for Razan: Add Routing Matcher here before calling ResponseBuilder
-        // const Location* loc = conn->serverConfig->matchLocation(request.getPath());
+        // ⭐ Routing Integration: Match location and override config if found
+        const Location* matchedLocation = conn->serverConfig->matchLocation(request.getPath());
+        ServerConfig effectiveConfig = *conn->serverConfig;
+        
+        if (matchedLocation != NULL)
+        {
+            // Override server config with location-specific settings
+            if (!matchedLocation->root.empty())
+                effectiveConfig.root = matchedLocation->root;
+            // Note: index, autoindex, and allowed_methods from Location
+            // can be accessed directly when ResponseBuilder is updated to support them
+        }
 
-        std::string response = ResponseBuild::handle(request, *conn->serverConfig);
+        std::string response = ResponseBuild::handle(request, effectiveConfig);
         _clientWriteBuffers[conn->fd] = response;
 
         struct epoll_event ev;

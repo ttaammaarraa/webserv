@@ -1,4 +1,5 @@
 #include "HttpRequest.hpp"
+#include "ChunkedBodyParser.hpp"
 #include <sstream>
 #include <algorithm>
 #include <cctype>
@@ -101,66 +102,30 @@ HttpRequest HttpRequest::parse(const std::string& raw_request)
     const size_t bodyStart = headerEnd + 4;
     if (!transferEnc.empty() && transferEnc.find("chunked") != std::string::npos)
     {
-        // Parse chunked transfer encoding
+        // Use ChunkedBodyParser for Transfer-Encoding: chunked
+        ChunkedBodyParser parser;
         size_t pos = bodyStart;
         
-        while (pos < raw_request.size())
+        // Parse chunked data; parser maintains state and appends decoded chunks to req._body
+        parser.parse(raw_request, pos, req._body);
+        
+        // Handle parsing errors
+        if (parser.hasError())
         {
-            // Find the end of the chunk size line (CRLF)
-            size_t crlf_pos = raw_request.find("\r\n", pos);
-            if (crlf_pos == std::string::npos)
-            {
-                // Incomplete chunk size line; wait for more data
-                break;
-            }
-            
-            // Extract and trim the chunk size line (handles chunk extensions like "size;name=value")
-            std::string size_line = trim(raw_request.substr(pos, crlf_pos - pos));
-            if (size_line.empty())
-            {
-                // Malformed chunk, stop processing
-                break;
-            }
-            
-            // Parse hexadecimal chunk size (base 16)
-            errno = 0;
-            char *end = NULL;
-            const char *begin = size_line.c_str();
-            long chunk_size = std::strtol(begin, &end, 16);
-            
-            // Validate hex parse: must have consumed at least one character and no error
-            if (begin == end || errno != 0 || chunk_size < 0)
-            {
-                // Invalid chunk size; malformed chunked body
-                break;
-            }
-            
-            pos = crlf_pos + 2;  // Move past the CRLF
-            
-            if (chunk_size == 0)
-            {
-                // Zero-sized chunk signals end of chunked body
-                break;
-            }
-            
-            // Safely cast and validate we have enough data
-            size_t chunk_size_u = static_cast<size_t>(chunk_size);
-            
-            // Check if we have the complete chunk: chunk_data + trailing CRLF
-            if (pos > raw_request.size() || 
-                chunk_size_u > raw_request.size() - pos ||
-                pos + chunk_size_u + 2 > raw_request.size())
-            {
-                // Not enough data for this chunk; partial buffer, wait for more
-                break;
-            }
-            
-            // Append chunk data to request body
-            req._body.append(raw_request, pos, chunk_size_u);
-            
-            // Move position past chunk data and its trailing CRLF
-            pos += chunk_size_u + 2;
+            // Malformed chunked encoding; return what we have
+            // Server will handle the invalid request appropriately
+            return req;
         }
+        
+        // If parsing is not complete, request needs more data
+        if (!parser.isDone())
+        {
+            // Incomplete chunked data; return partial body
+            // Server will wait for more data on subsequent reads
+            return req;
+        }
+        
+        // Successfully parsed complete chunked body
         return req;
     }
 
