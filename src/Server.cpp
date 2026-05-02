@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
+#include <sys/sendfile.h>
 #include <arpa/inet.h>
 #include <iostream>
 #include <unistd.h>
@@ -154,6 +155,12 @@ void Server::cleanup_connection(Connection* conn)
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
     close(fd);
 
+    if (conn->file_fd != -1)
+    {
+        close(conn->file_fd);
+        conn->file_fd = -1;
+    }
+
     if (!conn->isServer)
     {
         _clientBuffers.erase(fd);
@@ -271,8 +278,11 @@ void Server::handle_client(Connection* conn)
             // can be accessed directly when ResponseBuilder is updated to support them
         }
 
-        std::string response = ResponseBuild::handle(request, effectiveConfig);
-        _clientWriteBuffers[conn->fd] = response;
+        ServerConfig *previousConfig = conn->serverConfig;
+        conn->serverConfig = &effectiveConfig;
+        std::string headers = ResponseBuild::handle(conn, request);
+        conn->serverConfig = previousConfig;
+        _clientWriteBuffers[conn->fd] = headers;
 
         struct epoll_event ev;
         ev.events = EPOLLOUT;
@@ -286,23 +296,60 @@ void Server::handle_client_write(Connection* conn)
     conn->last_activity = time(NULL); // ⭐ Update time on write
 
     std::map<int, std::string>::iterator it = _clientWriteBuffers.find(conn->fd);
-    if (it == _clientWriteBuffers.end()) {
-        return;
+    if (it != _clientWriteBuffers.end() && !it->second.empty())
+    {
+        std::string& buffer = it->second;
+        ssize_t sent = send(conn->fd, buffer.c_str(), buffer.size(), 0);
+        if (sent < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return;
+            cleanup_connection(conn);
+            std::cout << "Send error, client disconnected\n";
+            _clientWriteBuffers.erase(it);
+            return;
+        }
+        if (sent > 0)
+        {
+            if ((size_t)sent < buffer.size())
+            {
+                buffer.erase(0, static_cast<size_t>(sent));
+                return;
+            }
+            _clientWriteBuffers.erase(it);
+        }
     }
-    std::string& buffer = it->second;
-    ssize_t sent = send(conn->fd, buffer.c_str(), buffer.size(), 0);
-    if (sent < 0) {
-        cleanup_connection(conn);
-        std::cout << "Send error, client disconnected\n";
-        _clientWriteBuffers.erase(it);
-        return;
-    }
-    if ((size_t)sent < buffer.size()) {
-        buffer = buffer.substr(sent);
-    } else {
-        _clientWriteBuffers.erase(it);
-        std::cout << "Response sent\n";
-        cleanup_connection(conn);
+
+    if (conn->file_fd != -1)
+    {
+        off_t offset = static_cast<off_t>(conn->bytes_sent);
+        size_t remaining = conn->file_size - conn->bytes_sent;
+        ssize_t sent = sendfile(conn->fd, conn->file_fd, &offset, remaining);
+        if (sent < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return;
+            cleanup_connection(conn);
+            std::cout << "File streaming error, client disconnected\n";
+            return;
+        }
+        if (sent == 0)
+        {
+            cleanup_connection(conn);
+            return;
+        }
+
+        conn->bytes_sent += static_cast<size_t>(sent);
+        if (conn->bytes_sent >= conn->file_size)
+        {
+            close(conn->file_fd);
+            conn->file_fd = -1;
+            conn->file_size = 0;
+            conn->bytes_sent = 0;
+            conn->isStreaming = false;
+            std::cout << "Response sent\n";
+            cleanup_connection(conn);
+        }
     }
 }
 
