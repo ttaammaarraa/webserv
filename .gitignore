@@ -39,3 +39,9 @@
 
 # debug information files
 *.dwo
+
+# Project build artifacts
+webserv
+tests/http_request_body_test
+tests/http_request_parser_test
+tests/http_request_chunked_test
