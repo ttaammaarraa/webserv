@@ -6,28 +6,118 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
 #include <cerrno>
+#include <fstream>
 
 #include "Server.hpp"
+#include "GetHandler.hpp"
+#include "PostDeleteHandler.hpp"
+#include "ResponseUtils.hpp"
 
-static std::string readFileDescriptor(const std::string& path)
+// Helper utilities moved to ResponseUtils
+
+std::string ResponseBuilder::handle(Connection* conn, const HttpRequest& req)
 {
-	int fd = open(path.c_str(), O_RDONLY);
-	if (fd < 0)
+	if (!conn || !conn->serverConfig)
 		return "";
 
-	std::string content;
-	char buffer[4096];
-	ssize_t bytesRead = 0;
-	while ((bytesRead = read(fd, buffer, sizeof(buffer))) > 0)
-		content.append(buffer, static_cast<size_t>(bytesRead));
-	close(fd);
+	if (conn)
+	{
+		if (conn->file_fd != -1)
+		{
+			close(conn->file_fd);
+			conn->file_fd = -1;
+		}
+		conn->file_size = 0;
+		conn->bytes_sent = 0;
+		conn->isStreaming = false;
+	}
+
+	std::string method = req.getMethod();
+	if (method == "GET" || method == "HEAD")
+		return GetHandler::handle(conn, req, *conn->serverConfig);
+	else if (method == "POST")
+		return PostDeleteHandler::handlePost(conn, req, *conn->serverConfig);
+	else if (method == "DELETE")
+		return PostDeleteHandler::handleDelete(conn, req, *conn->serverConfig);
+	else
+		return ResponseUtils::buildErrorRes(405, *conn->serverConfig);
+}
+// GET/POST/DELETE specific logic moved to handlers
+
+bool ResponseBuilder::streamGetChunk(Connection* conn, int epoll_fd)
+{
+	if (!conn)
+		return false;
+	if (conn->file_fd == -1)
+		return true;
+	if (conn->bytes_sent >= conn->file_size)
+	{
+		close(conn->file_fd);
+		conn->file_fd = -1;
+		conn->file_size = 0;
+		conn->bytes_sent = 0;
+		conn->isStreaming = false;
+		return true;
+	}
+
+	const size_t kChunkSize = 8192;
+	size_t remaining = conn->file_size - conn->bytes_sent;
+	size_t toRead = (remaining > kChunkSize) ? kChunkSize : remaining;
+
+	char buffer[8192];
+	ssize_t bytesRead = pread(conn->file_fd, buffer, toRead, static_cast<off_t>(conn->bytes_sent));
 	if (bytesRead < 0)
-		return "";
-	return content;
+		return false;
+	if (bytesRead == 0)
+	{
+		close(conn->file_fd);
+		conn->file_fd = -1;
+		conn->file_size = 0;
+		conn->bytes_sent = 0;
+		conn->isStreaming = false;
+		return true;
+	}
+
+	ssize_t sent = send(conn->fd, buffer, static_cast<size_t>(bytesRead), 0);
+	if (sent < 0)
+	{
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+		{
+			struct epoll_event ev;
+			ev.events = EPOLLOUT;
+			ev.data.ptr = conn;
+			epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+			return true;
+		}
+		return false;
+	}
+
+	conn->bytes_sent += static_cast<size_t>(sent);
+	if (conn->bytes_sent >= conn->file_size)
+	{
+		close(conn->file_fd);
+		conn->file_fd = -1;
+		conn->file_size = 0;
+		conn->bytes_sent = 0;
+		conn->isStreaming = false;
+	}
+
+	return true;
 }
 
-std::string ResponseBuild::handle(Connection* conn, const HttpRequest& req)
+std::string ResponseBuilder::handlePost(Connection* conn, const HttpRequest& req, const ServerConfig& conf)
+{
+	(void)conn;
+	(void)req;
+	(void)conf;
+	return std::string();
+}
+
+// ========== ORIGINAL ABEER'S HANDLE METHOD (preserved for reference) ==========
+/*
+std::string ResponseBuilder::handle(Connection* conn, const HttpRequest& req)
 {
 	if (!conn || !conn->serverConfig)
 		return "";
@@ -49,17 +139,55 @@ std::string ResponseBuild::handle(Connection* conn, const HttpRequest& req)
 	if (req.getPath().find("..") != std::string::npos)
 		return buildErrorRes(403, conf);
 
-	std::string filepath = conf.root;
-	if (!req.getPath().empty() && req.getPath()[0] != '/')
-		filepath += "/";
-	filepath += req.getPath();
+	const Location* matchedLocation = conf.matchLocation(req.getPath());
+	std::string effectiveRoot = conf.root;
+	std::string effectiveIndex = "index.html";
+	bool autoindexEnabled = false;
+	std::string suffixPath = req.getPath();
+
+	if (matchedLocation != NULL)
+	{
+		if (!matchedLocation->root.empty())
+			effectiveRoot = matchedLocation->root;
+		if (!matchedLocation->index.empty())
+			effectiveIndex = matchedLocation->index;
+		autoindexEnabled = matchedLocation->autoindex;
+
+		if (!matchedLocation->root.empty() && !matchedLocation->path.empty() && matchedLocation->path != "/"
+			&& suffixPath.compare(0, matchedLocation->path.size(), matchedLocation->path) == 0)
+		{
+			suffixPath = suffixPath.substr(matchedLocation->path.size());
+			if (suffixPath.empty())
+				suffixPath = "/";
+		}
+	}
+
+	std::string filepath = joinPath(effectiveRoot, suffixPath);
 
 	struct stat st;
 	if (stat(filepath.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
 	{
-		if (filepath[filepath.size() - 1] != '/')
-			filepath += "/";
-		filepath += "index.html";
+		std::string directoryPath = filepath;
+		std::string indexPath = joinPath(directoryPath, effectiveIndex);
+		if (stat(indexPath.c_str(), &st) == 0)
+			filepath = indexPath;
+		else if (autoindexEnabled)
+		{
+			std::string body = AutoIndexGenerator::generate(directoryPath, req.getPath());
+			if (body.empty())
+				return buildErrorRes((errno == EACCES) ? 403 : 500, conf);
+
+			std::ostringstream oss;
+			oss << "HTTP/1.1 200 OK\\r\\n";
+			oss << "Content-Length: " << body.size() << "\\r\\n";
+			oss << "Content-Type: text/html\\r\\n";
+			oss << "Connection: close\\r\\n";
+			oss << "\\r\\n";
+			oss << body;
+			return oss.str();
+		}
+		else
+			return buildErrorRes(403, conf);
 	}
 	if (stat(filepath.c_str(), &st) != 0)
 		return buildErrorRes(404, conf);
@@ -90,71 +218,23 @@ std::string ResponseBuild::handle(Connection* conn, const HttpRequest& req)
 	}
 
 	std::ostringstream oss;
-	oss << "HTTP/1.1 200 OK\r\n";
-	oss << "Content-Length: " << static_cast<size_t>(st.st_size) << "\r\n";
-	oss << "Content-Type: " << getMimeType(filepath) << "\r\n";
-	oss << "Accept-Ranges: bytes\r\n";
-	oss << "Connection: close\r\n";
-	oss << "\r\n";
+	oss << "HTTP/1.1 200 OK\\r\\n";
+	oss << "Content-Length: " << static_cast<size_t>(st.st_size) << "\\r\\n";
+	oss << "Content-Type: " << getMimeType(filepath) << "\\r\\n";
+	oss << "Accept-Ranges: bytes\\r\\n";
+	oss << "Connection: close\\r\\n";
+	oss << "\\r\\n";
 	return oss.str();
 }
+*/
+// ========== END ORIGINAL HANDLE METHOD ==========
 
-std::string ResponseBuild::buildErrorRes(int code, const ServerConfig& conf)
+std::string ResponseBuilder::buildErrorRes(int code, const ServerConfig& conf)
 {
-	std::string body;
-	std::string errorFile;
-
-	std::map<int, std::string>::const_iterator it = conf.error_pages.find(code);
-	if (it != conf.error_pages.end())
-		errorFile = it->second;
-
-	if (!errorFile.empty())
-		body = readFileDescriptor(errorFile);
-	if (body.empty())
-		body = "<html><body><h1>Error</h1></body></html>";
-	std::ostringstream oss;
-
-	if (code == 404)
-		oss << "HTTP/1.1 404 Not Found\r\n";
-	else if (code == 403)
-		oss << "HTTP/1.1 403 Forbidden\r\n";
-	else
-		oss << "HTTP/1.1 500 Internal Server Error\r\n";
-	
-	oss << "Content-Length: " << body.size() << "\r\n";
-    oss << "Content-Type: text/html\r\n";
-    oss << "Connection: close\r\n";
-    oss << "\r\n";
-    oss << body;
-
-	return (oss.str());
+	return ResponseUtils::buildErrorRes(code, conf);
 }
 
-std::string ResponseBuild::getMimeType(const std::string& path)
+std::string ResponseBuilder::getMimeType(const std::string& path)
 {
-	static std::map<std::string, std::string> mimeTypes;
-
-	if (mimeTypes.empty())
-	{
-		mimeTypes[".html"] = "text/html";
-		mimeTypes[".css"] = "text/css";
-		mimeTypes[".js"] = "application/javascript";
-		mimeTypes[".png"] = "image/png";
-		mimeTypes[".jpg"] = "image/jpeg";
-		mimeTypes[".jpeg"] = "image/jpeg";
-		mimeTypes[".gif"] = "image/gif";
-		mimeTypes[".ico"] = "image/x-icon";
-		mimeTypes[".txt"] = "text/plain";
-		mimeTypes[".pdf"] = "application/pdf";
-	}
-
-	size_t dot = path.find_last_of('.');
-	if (dot == std::string::npos)
-		return "application/octet-stream";
-
-	std::string ext = path.substr(dot);
-	std::map<std::string, std::string>::const_iterator it = mimeTypes.find(ext);
-	if (it != mimeTypes.end())
-		return it->second;
-	return "application/octet-stream";
+	return ResponseUtils::getMimeType(path);
 }

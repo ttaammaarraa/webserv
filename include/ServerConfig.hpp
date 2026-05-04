@@ -10,11 +10,12 @@ struct Location
     std::string path;
     std::string root;
     std::string index;
+    std::string upload_path;
     bool autoindex;
     std::vector<std::string> allowed_methods;
 
-    Location() : path(""), root(""), index("index.html"), autoindex(false) {}
-    Location(const std::string& p) : path(p), root(""), index("index.html"), autoindex(false) {}
+    Location() : path(""), root(""), index("index.html"), upload_path(""), autoindex(false) {}
+    Location(const std::string& p) : path(p), root(""), index("index.html"), upload_path(""), autoindex(false) {}
 };
 
 struct ServerConfig 

@@ -280,7 +280,7 @@ void Server::handle_client(Connection* conn)
 
         ServerConfig *previousConfig = conn->serverConfig;
         conn->serverConfig = &effectiveConfig;
-        std::string headers = ResponseBuild::handle(conn, request);
+        std::string headers = ResponseBuilder::handle(conn, request);
         conn->serverConfig = previousConfig;
         _clientWriteBuffers[conn->fd] = headers;
 
@@ -322,6 +322,21 @@ void Server::handle_client_write(Connection* conn)
 
     if (conn->file_fd != -1)
     {
+        if (!ResponseBuilder::streamGetChunk(conn, epoll_fd))
+        {
+            cleanup_connection(conn);
+            std::cout << "File streaming error, client disconnected\n";
+            return;
+        }
+
+        if (!conn->isStreaming)
+        {
+            std::cout << "Response sent\n";
+            cleanup_connection(conn);
+        }
+
+        // Logic Razan old work before adding chunked streaming feature:
+        /*
         off_t offset = static_cast<off_t>(conn->bytes_sent);
         size_t remaining = conn->file_size - conn->bytes_sent;
         ssize_t sent = sendfile(conn->fd, conn->file_fd, &offset, remaining);
@@ -350,6 +365,7 @@ void Server::handle_client_write(Connection* conn)
             std::cout << "Response sent\n";
             cleanup_connection(conn);
         }
+        */
     }
 }
 
