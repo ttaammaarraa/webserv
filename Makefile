@@ -2,7 +2,7 @@ NAME		= webserv
 CXX 		= c++
 CXXFLAGS 	= -Wall -Wextra -Werror -std=c++98
 CPPFLAGS	= -Iinclude
-SRC 		= main.cpp src/ConfigParser.cpp src/HttpRequest.cpp src/ResponseBuilder.cpp src/Server.cpp src/ServerUtils.cpp src/ChunkedBodyParser.cpp src/AutoIndexGenerator.cpp src/GetHandler.cpp src/PostDeleteHandler.cpp src/ResponseUtils.cpp
+SRC 		= main.cpp src/ConfigParser.cpp src/HttpRequest.cpp src/ResponseBuilder.cpp src/Server.cpp src/ServerUtils.cpp src/ChunkedBodyParser.cpp src/AutoIndexGenerator.cpp src/GetHandler.cpp src/PostDeleteHandler.cpp src/ResponseUtils.cpp src/CGIHandler.cpp
 OBJ 		= $(SRC:.cpp=.o)
 
 
@@ -14,7 +14,7 @@ TEST_AUTOINDEX_NAME	= tests/autoindex_test
 TEST_BODY_OBJ	= tests/HttpRequestBodyTest.o src/HttpRequest.o src/ChunkedBodyParser.o
 TEST_PARSER_OBJ	= tests/HttpRequestParserTest.o src/HttpRequest.o src/ChunkedBodyParser.o
 TEST_CHUNKED_OBJ	= tests/ChunkedParserTest.o src/ChunkedBodyParser.o
-TEST_AUTOINDEX_OBJ	= tests/AutoIndexTest.o src/HttpRequest.o src/ResponseBuilder.o src/Server.o src/ServerUtils.o src/ConfigParser.o src/ChunkedBodyParser.o src/AutoIndexGenerator.o src/GetHandler.o src/PostDeleteHandler.o src/ResponseUtils.o
+TEST_AUTOINDEX_OBJ	= tests/AutoIndexTest.o src/HttpRequest.o src/ResponseBuilder.o src/Server.o src/ServerUtils.o src/ConfigParser.o src/ChunkedBodyParser.o src/AutoIndexGenerator.o src/GetHandler.o src/PostDeleteHandler.o src/ResponseUtils.o src/CGIHandler.o
 
 
 all: $(NAME)

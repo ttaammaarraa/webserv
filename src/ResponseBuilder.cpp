@@ -14,6 +14,7 @@
 #include "GetHandler.hpp"
 #include "PostDeleteHandler.hpp"
 #include "ResponseUtils.hpp"
+#include "CGIHandler.hpp"
 
 // Helper utilities moved to ResponseUtils
 
@@ -35,6 +36,8 @@ std::string ResponseBuilder::handle(Connection* conn, const HttpRequest& req)
 	}
 
 	std::string method = req.getMethod();
+	if (CGIHandler::isCGI(req.getPath()))
+		return CGIHandler::handle(conn, req, *conn->serverConfig);
 	if (method == "GET" || method == "HEAD")
 		return GetHandler::handle(conn, req, *conn->serverConfig);
 	else if (method == "POST")
