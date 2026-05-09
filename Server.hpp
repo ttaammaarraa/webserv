@@ -24,6 +24,9 @@ struct Connection
     int cgi_pipe[2];
     bool isCGIConn;
 
+    Connection* client; //pointer to the real client socket so CGI output can be sent back correctly
+    bool headers_sent; // prevents sending HTTP headers multiple times
+
     // ⭐ Task 3: streaming
     int stream_fd;
     bool isStreaming;

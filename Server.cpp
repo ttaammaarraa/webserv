@@ -17,16 +17,18 @@ volatile sig_atomic_t g_keepRunning = 1;
 
 
 Connection::Connection()
-        : fd(-1),
-          isServer(false),
-          last_activity(time(NULL)),
-          isCGI(false),
-          cgi_fd(-1),
-                    isCGIConn(false),
-          stream_fd(-1),
-          isStreaming(false),
-          stream_offset(0)
-    {}
+    : fd(-1),
+      isServer(false),
+      last_activity(time(NULL)),
+      isCGI(false),
+      isCGIConn(false),
+      client(NULL),
+      headers_sent(false),
+      cgi_fd(-1),
+      stream_fd(-1),
+      isStreaming(false),
+      stream_offset(0)
+{}
 
 Server::Server() : _server_fd(-1), _port(0), epoll_fd(-1), _serverConn(NULL), stopped(false)
 {
@@ -166,12 +168,16 @@ void Server::cleanup_connection(Connection* conn)
     if (!conn) return;
 
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, conn->fd, NULL);
-    shutdown(conn->fd, SHUT_RDWR);
+    if (!conn->isCGIConn)
+        shutdown(conn->fd, SHUT_RDWR);
     close(conn->fd);
-    if (conn->isCGIConn)
-    {
-        close(conn->fd);
-    }
+    // if (conn->isCGIConn) double close
+    // {
+    //     close(conn->fd);
+    // }
+     if (conn->stream_fd != -1)
+        close(conn->stream_fd);
+    
     _clientBuffers.erase(conn->fd);
     _clientWriteBuffers.erase(conn->fd);
     std::map<int, Connection*>::iterator it = _connections.find(conn->fd);
@@ -229,7 +235,6 @@ void Server::handle_client(Connection* conn)
 
         if (request.path.find("/cgi") != std::string::npos)
         {
-            conn->isCGI = true;
             start_cgi(conn, "./cgi_script");
             return;
         }
@@ -312,6 +317,7 @@ void Server::handle_client_write(Connection* conn)
         if (bytes <= 0)
         {
             close(conn->stream_fd);
+            conn->stream_fd = -1;
             conn->isStreaming = false;
             conn->stream_offset = 0; // reset 
             std::cout << "File sent\n";
@@ -324,6 +330,7 @@ void Server::handle_client_write(Connection* conn)
         if (sent <= 0)
         {
             close(conn->stream_fd);
+            conn->stream_fd = -1;
             cleanup_connection(conn);
             return;
         }
@@ -367,7 +374,7 @@ void Server::run()
             }
 
             // CGI PIPE
-            else if (conn->isCGI)
+            else if (conn->isCGI && (events[i].events & EPOLLIN))
             {
                 handle_cgi(conn);
             }
@@ -386,6 +393,7 @@ void Server::run()
         }
     }
 }
+
 void Server::start_cgi(Connection* clientConn, std::string path)
 {
     int pipefd[2];
@@ -399,6 +407,7 @@ void Server::start_cgi(Connection* clientConn, std::string path)
         // CHILD (CGI process)
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[0]);
+        close(pipefd[1]);
 
         char *args[] = {(char*)path.c_str(), NULL};
 
@@ -411,10 +420,14 @@ void Server::start_cgi(Connection* clientConn, std::string path)
         // PARENT (server)
         close(pipefd[1]);
 
+        int flags = fcntl(pipefd[0], F_GETFL, 0);
+        fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+
         Connection* cgiConn = new Connection();
 
         cgiConn->fd = pipefd[0];
         cgiConn->isCGI = true;
+        cgiConn->client = clientConn;
         cgiConn->isServer = false;
         cgiConn->isCGIConn = true;
 
@@ -425,24 +438,44 @@ void Server::start_cgi(Connection* clientConn, std::string path)
         ev.data.ptr = cgiConn;
 
         epoll_ctl(epoll_fd, EPOLL_CTL_ADD, cgiConn->fd, &ev);
-
-        clientConn->isCGI = true;
     }
 }
 
 void Server::handle_cgi(Connection* conn)
 {
     conn->last_activity = time(NULL);
-    char buffer[4096];
-    int bytes = read(conn->fd, buffer, sizeof(buffer));
 
-    if (bytes <= 0)
+    if (!conn->client)
     {
         cleanup_connection(conn);
         return;
     }
 
-    send(conn->fd, buffer, bytes, 0);
+    if (!conn->headers_sent)
+    {
+        std::string headers =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/html\r\n\r\n";
+
+        send(conn->client->fd, headers.c_str(), headers.size(), 0);
+
+        conn->headers_sent = true;
+    }
+
+    char buffer[4096];
+
+    int bytes = read(conn->fd, buffer, sizeof(buffer));
+
+    if (bytes <= 0)
+    {
+        if (conn->client)
+            cleanup_connection(conn->client);
+        cleanup_connection(conn);
+        return;
+    }
+
+    //  FIXED
+    send(conn->client->fd, buffer, bytes, 0);
 }
 
 void Server::stop()
