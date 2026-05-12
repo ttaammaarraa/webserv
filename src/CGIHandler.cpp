@@ -4,107 +4,193 @@
 #include "ResponseUtils.hpp"
 #include "ServerConfig.hpp"
 
-#include <sstream>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <fcntl.h>
+#include <unistd.h>
+#include <sstream>
+#include <vector>
 #include <cstring>
-#include <cstdlib>
 
-bool CGIHandler::isCGI(const std::string& path)
+bool CGIHandler::isCGI(const std::string &path)
 {
-    size_t dot = path.rfind('.');
+	size_t dot = path.rfind('.');
+	if (dot == std::string::npos)
+		return false;
 
-    if (dot == std::string::npos)
-        return false;
-
-    std::string ext = path.substr(dot);
-
-    return (
-        ext == ".py" ||
-        ext == ".php" ||
-        ext == ".cgi"
-    );
+	std::string ext = path.substr(dot);
+	return ext == ".py" || ext == ".php" || ext == ".cgi";
 }
 
-std::string runCGI(const std::string& path)
+static bool hasExtension(const std::string &path, const std::string &ext)
 {
-	int fd[2];
-	if (pipe(fd) == -1)
-		return ("HTTP/1.1 500\r\n\r\nPipe error");
-
-	pid_t pid = fork();
-	if (pid == -1)
-		return ("HTTP/1.1 500\r\n\r\nFork error");
-
-	if (pid == 0)
-	{
-		dup2(fd[1], STDOUT_FILENO);
-		close(fd[0]);
-		close(fd[1]);
-
-		char* const argv[] = {
-			(char*)"python3",
-			(char*)path.c_str(),
-			NULL
-		};
-
-		char* const envp[] = { NULL };
-		execve("/usr/bin/python3", argv, envp);
-		exit(1);
-	}
-	else
-	{
-		close(fd[1]);
-
-		char buff[4096];
-		std::string result;
-		ssize_t byt;
-
-		while((byt = read(fd[0], buff, sizeof(buff))) > 0)
-			result.append(buff, byt);
-		close(fd[0]);
-		waitpid(pid, NULL,0);
-
-		return result;
-	}
-	return "";
+	return path.size() >= ext.size() && path.compare(path.size() - ext.size(), ext.size(), ext) == 0;
 }
 
-std::string CGIHandler::handle(
-    Connection* conn,
-    const HttpRequest& req,
-    const ServerConfig& conf
-)
+static std::string buildResponseFromCGI(const std::string &output)
 {
-	(void)conf;
-    (void)conn;
-  
-	std::string path = req.getPath();
-	std::string fullPath = "./www" + path;
-	std::string output = runCGI(fullPath);
-
 	std::string headers;
 	std::string body;
+	size_t sep = output.find("\r\n\r\n");
 
-	size_t pos = output.find("\n\n");
-
-	if (pos != std::string::npos)
+	if (sep != std::string::npos)
 	{
-	    headers = output.substr(0, pos);
-	    body = output.substr(pos + 2);
+		headers = output.substr(0, sep);
+		body = output.substr(sep + 4);
 	}
 	else
 	{
-	    body = output;
-	    headers = "Content-Type: text/plain";
+		body = output;
 	}
 
+	std::istringstream headerStream(headers);
+	std::string line;
+	std::string responseHeaders;
+	bool hasContentType = false;
+	std::string statusLine = "HTTP/1.1 200 OK";
+
+	while (std::getline(headerStream, line))
+	{
+		if (!line.empty() && line[line.size() - 1] == '\r')
+			line.erase(line.end() - 1);
+
+		if (line.empty())
+			continue;
+
+		if (line.find("Status:") == 0)
+		{
+			std::string value = line.substr(7);
+			while (!value.empty() && value[0] == ' ')
+				value.erase(value.begin());
+			if (!value.empty())
+				statusLine = "HTTP/1.1 " + value;
+			continue;
+		}
+
+		if (line.find("Content-Type:") == 0)
+			hasContentType = true;
+
+		responseHeaders += line + "\r\n";
+	}
+
+	if (!hasContentType)
+		responseHeaders += "Content-Type: text/html\r\n";
+
 	std::ostringstream oss;
-	oss << "HTTP/1.1 200 OK\r\n";
-	oss << headers << "\r\n";
+	oss << statusLine << "\r\n";
+	oss << responseHeaders;
 	oss << "Content-Length: " << body.size() << "\r\n";
 	oss << "\r\n";
 	oss << body;
-
 	return oss.str();
+}
+
+static std::string executeCGI(const std::string &scriptPath, const HttpRequest &req)
+{
+	int stdinPipe[2];
+	int stdoutPipe[2];
+	if (pipe(stdinPipe) != 0 || pipe(stdoutPipe) != 0)
+		return std::string();
+
+	pid_t pid = fork();
+	if (pid < 0)
+	{
+		close(stdinPipe[0]);
+		close(stdinPipe[1]);
+		close(stdoutPipe[0]);
+		close(stdoutPipe[1]);
+		return std::string();
+	}
+
+	if (pid == 0)
+	{
+		dup2(stdinPipe[0], STDIN_FILENO);
+		dup2(stdoutPipe[1], STDOUT_FILENO);
+
+		close(stdinPipe[0]);
+		close(stdinPipe[1]);
+		close(stdoutPipe[0]);
+		close(stdoutPipe[1]);
+
+		std::vector<std::string> envStrings;
+		envStrings.push_back("GATEWAY_INTERFACE=CGI/1.1");
+		envStrings.push_back("REQUEST_METHOD=" + req.getMethod());
+		envStrings.push_back("SCRIPT_FILENAME=" + scriptPath);
+		envStrings.push_back("SERVER_PROTOCOL=" + req.getVersion());
+		envStrings.push_back("REDIRECT_STATUS=200");
+		std::ostringstream oss;
+		oss << req.getBody().size();
+		envStrings.push_back("CONTENT_LENGTH=" + oss.str());
+
+		const std::string &contentType = req.getHeaders().count("Content-Type")
+											 ? req.getHeaders().at("Content-Type")
+											 : "text/plain";
+		envStrings.push_back("CONTENT_TYPE=" + contentType);
+
+		std::vector<char *> envp;
+		for (size_t i = 0; i < envStrings.size(); ++i)
+			envp.push_back(const_cast<char *>(envStrings[i].c_str()));
+		envp.push_back(0);
+
+		std::vector<char *> argv;
+		if (hasExtension(scriptPath, ".py"))
+		{
+			argv.push_back(const_cast<char *>("/usr/bin/python3"));
+			argv.push_back(const_cast<char *>(scriptPath.c_str()));
+		}
+		else if (hasExtension(scriptPath, ".php"))
+		{
+			argv.push_back(const_cast<char *>("/usr/bin/php-cgi"));
+			argv.push_back(const_cast<char *>(scriptPath.c_str()));
+		}
+		else
+		{
+			argv.push_back(const_cast<char *>(scriptPath.c_str()));
+		}
+		argv.push_back(0);
+
+		execve(argv[0], &argv[0], &envp[0]);
+		_exit(127);
+	}
+
+	close(stdinPipe[0]);
+	close(stdoutPipe[1]);
+
+	const std::string &body = req.getBody();
+	if (!body.empty())
+		write(stdinPipe[1], body.c_str(), body.size());
+	close(stdinPipe[1]);
+
+	std::string result;
+	char buffer[4096];
+	ssize_t bytesRead;
+	while ((bytesRead = read(stdoutPipe[0], buffer, sizeof(buffer))) > 0)
+		result.append(buffer, static_cast<size_t>(bytesRead));
+
+	close(stdoutPipe[0]);
+	waitpid(pid, NULL, 0);
+	return result;
+}
+
+std::string CGIHandler::handle(
+	Connection *conn,
+	const HttpRequest &req,
+	const ServerConfig &conf)
+{
+	(void)conn;
+
+	if (req.getPath().find("..") != std::string::npos)
+		return ResponseUtils::buildErrorRes(403, conf);
+
+	std::string scriptPath = ResponseUtils::joinPath(conf.root.empty() ? "./www" : conf.root, req.getPath());
+
+	struct stat st;
+	if (stat(scriptPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+		return ResponseUtils::buildErrorRes(404, conf);
+
+	std::string cgiOutput = executeCGI(scriptPath, req);
+	if (cgiOutput.empty())
+		return ResponseUtils::buildErrorRes(500, conf);
+
+	return buildResponseFromCGI(cgiOutput);
 }
