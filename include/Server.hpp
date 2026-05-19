@@ -2,6 +2,7 @@
 #define SERVER_HPP
 
 #include <netinet/in.h>
+#include <sys/types.h>
 #include <map>
 #include <vector>
 #include <string>
@@ -24,6 +25,7 @@ struct Connection
     int client_fd; // Fix: To remember who requested the CGI!
     bool isStreaming;
     int stream_fd;
+    pid_t cgi_pid;
 
     // ⭐ File Streaming State Variables
     int file_fd;
@@ -32,7 +34,7 @@ struct Connection
 
     Connection() : fd(-1), isServer(false), serverConfig(NULL), 
                    last_activity(time(NULL)), isCGI(false), 
-                   client_fd(-1), isStreaming(false), stream_fd(-1),
+                   client_fd(-1), isStreaming(false), stream_fd(-1), cgi_pid(-1),
                    file_fd(-1), file_size(0), bytes_sent(0) {}
 };
 
@@ -50,6 +52,8 @@ class Server
         void handle_accept(Connection* serverConn);
         void handle_client(Connection* conn);
         void handle_client_write(Connection* conn);
+        void handle_cgi(Connection* conn);
+        void register_cgi_connection(Connection* clientConn);
         void setupEpoll();
         bool setupListeningSocket(const ServerConfig& serverConfig);
         void addServerToEpoll(int serverFd);

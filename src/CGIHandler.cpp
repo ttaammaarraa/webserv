@@ -3,11 +3,14 @@
 #include "HttpRequest.hpp"
 #include "ResponseUtils.hpp"
 #include "ServerConfig.hpp"
+#include "Server.hpp"
 
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <cerrno>
 #include <sstream>
 #include <vector>
 #include <cstring>
@@ -27,7 +30,7 @@ static bool hasExtension(const std::string &path, const std::string &ext)
 	return path.size() >= ext.size() && path.compare(path.size() - ext.size(), ext.size(), ext) == 0;
 }
 
-static std::string buildResponseFromCGI(const std::string &output)
+std::string CGIHandler::buildResponseFromCGI(const std::string &output)
 {
 	std::string headers;
 	std::string body;
@@ -85,7 +88,44 @@ static std::string buildResponseFromCGI(const std::string &output)
 	return oss.str();
 }
 
-static std::string executeCGI(const std::string &scriptPath, const HttpRequest &req)
+static bool setNonBlocking(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags == -1)
+		return false;
+	return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+
+}
+
+static bool writeAllNonBlocking(int fd, const std::string &body)
+{
+	size_t totalWritten = 0;
+	while (totalWritten < body.size())
+	{
+		ssize_t bytes = write(fd, body.c_str() + totalWritten, body.size() - totalWritten);
+		if (bytes > 0)
+		{
+			totalWritten += static_cast<size_t>(bytes);
+			continue;
+		}
+		if (bytes < 0 && errno == EINTR)
+			continue;
+		if (bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			return false;
+		return false;
+	}
+	return true;
+}
+
+static void closePipePair(int stdinPipe[2], int stdoutPipe[2])
+{
+	close(stdinPipe[0]);
+	close(stdinPipe[1]);
+	close(stdoutPipe[0]);
+	close(stdoutPipe[1]);
+}
+
+static std::string launchCGI(const std::string &scriptPath, const HttpRequest &req, Connection *conn)
 {
 	int stdinPipe[2];
 	int stdoutPipe[2];
@@ -95,10 +135,7 @@ static std::string executeCGI(const std::string &scriptPath, const HttpRequest &
 	pid_t pid = fork();
 	if (pid < 0)
 	{
-		close(stdinPipe[0]);
-		close(stdinPipe[1]);
-		close(stdoutPipe[0]);
-		close(stdoutPipe[1]);
+		closePipePair(stdinPipe, stdoutPipe);
 		return std::string();
 	}
 
@@ -156,20 +193,31 @@ static std::string executeCGI(const std::string &scriptPath, const HttpRequest &
 	close(stdinPipe[0]);
 	close(stdoutPipe[1]);
 
+	if (!setNonBlocking(stdoutPipe[0]) || !setNonBlocking(stdinPipe[1]))
+	{
+		close(stdinPipe[1]);
+		close(stdoutPipe[0]);
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, WNOHANG);
+		return std::string();
+	}
+
 	const std::string &body = req.getBody();
-	if (!body.empty())
-		write(stdinPipe[1], body.c_str(), body.size());
+	if (!body.empty() && !writeAllNonBlocking(stdinPipe[1], body))
+	{
+		close(stdinPipe[1]);
+		close(stdoutPipe[0]);
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, WNOHANG);
+		return std::string();
+	}
 	close(stdinPipe[1]);
 
-	std::string result;
-	char buffer[4096];
-	ssize_t bytesRead;
-	while ((bytesRead = read(stdoutPipe[0], buffer, sizeof(buffer))) > 0)
-		result.append(buffer, static_cast<size_t>(bytesRead));
-
-	close(stdoutPipe[0]);
-	waitpid(pid, NULL, 0);
-	return result;
+	conn->stream_fd = stdoutPipe[0];
+	conn->cgi_pid = pid;
+	conn->client_fd = conn->fd;
+	conn->isCGI = true;
+	return std::string();
 }
 
 std::string CGIHandler::handle(
@@ -188,9 +236,5 @@ std::string CGIHandler::handle(
 	if (stat(scriptPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
 		return ResponseUtils::buildErrorRes(404, conf);
 
-	std::string cgiOutput = executeCGI(scriptPath, req);
-	if (cgiOutput.empty())
-		return ResponseUtils::buildErrorRes(500, conf);
-
-	return buildResponseFromCGI(cgiOutput);
+	return launchCGI(scriptPath, req, conn);
 }

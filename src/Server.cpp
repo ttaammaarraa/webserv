@@ -1,6 +1,8 @@
 #include "Server.hpp"
 #include "HttpRequest.hpp"
 #include "ResponseBuilder.hpp"
+#include "CGIHandler.hpp"
+#include "ResponseUtils.hpp"
 
 #include <csignal>
 #include <cstring>
@@ -8,7 +10,7 @@
 #include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
-#include <sys/sendfile.h>
+#include <sys/wait.h>
 #include <arpa/inet.h>
 #include <iostream>
 #include <unistd.h>
@@ -155,6 +157,9 @@ void Server::cleanup_connection(Connection* conn)
     epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
     close(fd);
 
+    if (conn->isCGI && conn->cgi_pid > 0)
+        waitpid(conn->cgi_pid, NULL, WNOHANG);
+
     if (conn->file_fd != -1)
     {
         close(conn->file_fd);
@@ -282,12 +287,119 @@ void Server::handle_client(Connection* conn)
         conn->serverConfig = &effectiveConfig;
         std::string headers = ResponseBuilder::handle(conn, request);
         conn->serverConfig = previousConfig;
+
+        if (conn->isCGI)
+        {
+            register_cgi_connection(conn);
+            return;
+        }
+
         _clientWriteBuffers[conn->fd] = headers;
 
         struct epoll_event ev;
         ev.events = EPOLLOUT;
         ev.data.ptr = conn;
         epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+    }
+}
+
+void Server::register_cgi_connection(Connection* clientConn)
+{
+    if (!clientConn || clientConn->stream_fd < 0)
+        return;
+
+    Connection* cgiConn = new Connection();
+    cgiConn->fd = clientConn->stream_fd;
+    cgiConn->isServer = false;
+    cgiConn->isCGI = true;
+    cgiConn->client_fd = clientConn->fd;
+    cgiConn->stream_fd = clientConn->stream_fd;
+    cgiConn->cgi_pid = clientConn->cgi_pid;
+    cgiConn->serverConfig = clientConn->serverConfig;
+    cgiConn->last_activity = time(NULL);
+
+    _connections[cgiConn->fd] = cgiConn;
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.ptr = cgiConn;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, cgiConn->fd, &ev) < 0)
+    {
+        cleanup_connection(cgiConn);
+        _clientWriteBuffers.erase(clientConn->fd);
+        std::string error = ResponseUtils::buildErrorRes(500, *clientConn->serverConfig);
+        _clientWriteBuffers[clientConn->fd] = error;
+        ev.events = EPOLLOUT;
+        ev.data.ptr = clientConn;
+        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, clientConn->fd, &ev);
+        clientConn->isCGI = false;
+        clientConn->stream_fd = -1;
+        clientConn->cgi_pid = -1;
+        return;
+    }
+
+    clientConn->isCGI = false;
+    clientConn->stream_fd = -1;
+    clientConn->cgi_pid = -1;
+}
+
+void Server::handle_cgi(Connection* conn)
+{
+    if (!conn || !conn->isCGI)
+        return;
+
+    conn->last_activity = time(NULL);
+
+    char buffer[4096];
+    std::string &clientBuffer = _clientWriteBuffers[conn->client_fd];
+    bool sawEOF = false;
+
+    while (true)
+    {
+        ssize_t bytes = read(conn->fd, buffer, sizeof(buffer));
+        if (bytes > 0)
+        {
+            clientBuffer.append(buffer, static_cast<size_t>(bytes));
+            continue;
+        }
+        if (bytes == 0)
+        {
+            sawEOF = true;
+            break;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+            break;
+
+        clientBuffer = ResponseUtils::buildErrorRes(500, *conn->serverConfig);
+        sawEOF = true;
+        break;
+    }
+
+    if (!sawEOF)
+        return;
+
+    // Process the accumulated CGI response
+    if (clientBuffer.empty())
+    {
+        clientBuffer = ResponseUtils::buildErrorRes(500, *conn->serverConfig);
+    }
+    else
+    {
+        clientBuffer = CGIHandler::buildResponseFromCGI(clientBuffer);
+    }
+
+    // Clean up the CGI pipe connection
+    int clientFd = conn->client_fd;
+    cleanup_connection(conn);
+
+    // Switch client socket to EPOLLOUT to send the response
+    std::map<int, Connection*>::iterator it = _connections.find(clientFd);
+    if (it != _connections.end())
+    {
+        struct epoll_event ev;
+        ev.events = EPOLLOUT;
+        ev.data.ptr = it->second;
+        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, clientFd, &ev);
     }
 }
 
@@ -320,6 +432,16 @@ void Server::handle_client_write(Connection* conn)
         }
     }
 
+    if (_clientWriteBuffers.find(conn->fd) == _clientWriteBuffers.end())
+    {
+        if (conn->file_fd == -1)
+        {
+            cleanup_connection(conn);
+            std::cout << "Response sent\n";
+            return;
+        }
+    }
+
     if (conn->file_fd != -1)
     {
         if (!ResponseBuilder::streamGetChunk(conn, epoll_fd))
@@ -333,39 +455,8 @@ void Server::handle_client_write(Connection* conn)
         {
             std::cout << "Response sent\n";
             cleanup_connection(conn);
-        }
-
-        // Logic Razan old work before adding chunked streaming feature:
-        /*
-        off_t offset = static_cast<off_t>(conn->bytes_sent);
-        size_t remaining = conn->file_size - conn->bytes_sent;
-        ssize_t sent = sendfile(conn->fd, conn->file_fd, &offset, remaining);
-        if (sent < 0)
-        {
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-                return;
-            cleanup_connection(conn);
-            std::cout << "File streaming error, client disconnected\n";
             return;
         }
-        if (sent == 0)
-        {
-            cleanup_connection(conn);
-            return;
-        }
-
-        conn->bytes_sent += static_cast<size_t>(sent);
-        if (conn->bytes_sent >= conn->file_size)
-        {
-            close(conn->file_fd);
-            conn->file_fd = -1;
-            conn->file_size = 0;
-            conn->bytes_sent = 0;
-            conn->isStreaming = false;
-            std::cout << "Response sent\n";
-            cleanup_connection(conn);
-        }
-        */
     }
 }
 
@@ -399,8 +490,7 @@ void Server::run()
             } 
             else if (conn->isCGI) 
             {
-                // ⭐ Placeholder for CGI logic
-                // handle_cgi(conn);
+                handle_cgi(conn);
             }
             else if (events[i].events & EPOLLOUT) 
             {

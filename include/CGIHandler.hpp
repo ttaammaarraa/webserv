@@ -10,6 +10,7 @@ struct ServerConfig;
 class CGIHandler {
 public:
 	static bool isCGI(const std::string& path);
+	static std::string buildResponseFromCGI(const std::string& output);
 
 	static std::string handle(
 		Connection* conn,
