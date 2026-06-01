@@ -129,8 +129,14 @@ static std::string launchCGI(const std::string &scriptPath, const HttpRequest &r
 {
 	int stdinPipe[2];
 	int stdoutPipe[2];
-	if (pipe(stdinPipe) != 0 || pipe(stdoutPipe) != 0)
+	if (pipe(stdinPipe) != 0)
 		return std::string();
+	if (pipe(stdoutPipe) != 0)
+	{
+		close(stdinPipe[0]);
+		close(stdinPipe[1]);
+		return std::string();
+	}
 
 	pid_t pid = fork();
 	if (pid < 0)

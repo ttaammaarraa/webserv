@@ -297,7 +297,7 @@ void Server::handle_client(Connection* conn)
         _clientWriteBuffers[conn->fd] = headers;
 
         struct epoll_event ev;
-        ev.events = EPOLLOUT;
+        ev.events = EPOLLIN | EPOLLOUT;
         ev.data.ptr = conn;
         epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
     }
@@ -329,7 +329,7 @@ void Server::register_cgi_connection(Connection* clientConn)
         _clientWriteBuffers.erase(clientConn->fd);
         std::string error = ResponseUtils::buildErrorRes(500, *clientConn->serverConfig);
         _clientWriteBuffers[clientConn->fd] = error;
-        ev.events = EPOLLOUT;
+        ev.events = EPOLLIN | EPOLLOUT;
         ev.data.ptr = clientConn;
         epoll_ctl(epoll_fd, EPOLL_CTL_MOD, clientConn->fd, &ev);
         clientConn->isCGI = false;
@@ -397,7 +397,7 @@ void Server::handle_cgi(Connection* conn)
     if (it != _connections.end())
     {
         struct epoll_event ev;
-        ev.events = EPOLLOUT;
+        ev.events = EPOLLIN | EPOLLOUT;
         ev.data.ptr = it->second;
         epoll_ctl(epoll_fd, EPOLL_CTL_MOD, clientFd, &ev);
     }
@@ -479,26 +479,44 @@ void Server::run()
         {
             Connection* conn = (Connection*)events[i].data.ptr;
 
+            if (conn->isCGI)
+            {
+                // CGI pipes can signal HUP on normal script EOF.
+                // Let handle_cgi() drain and finalize the response.
+                handle_cgi(conn);
+                continue;
+            }
+
             if (events[i].events & (EPOLLERR | EPOLLHUP))
             {
+                std::cout << "Connection error/hangup, cleaning up\n";
                 cleanup_connection(conn);
                 continue;
             }
+
             if (conn->isServer) 
             {
                 handle_accept(conn);
             } 
-            else if (conn->isCGI) 
+            else
             {
-                handle_cgi(conn);
-            }
-            else if (events[i].events & EPOLLOUT) 
-            {
-                handle_client_write(conn);
-            } 
-            else if (events[i].events & EPOLLIN) 
-            {
-                handle_client(conn);
+                int clientFd = conn->fd;
+
+                if (events[i].events & EPOLLIN)
+                {
+                    handle_client(conn);
+                    if (_connections.find(clientFd) == _connections.end())
+                        continue;
+                    conn = _connections.find(clientFd)->second;
+                }
+
+                if (events[i].events & EPOLLOUT)
+                {
+                    if (_connections.find(clientFd) == _connections.end())
+                        continue;
+                    conn = _connections.find(clientFd)->second;
+                    handle_client_write(conn);
+                }
             }
         }
     }
