@@ -1,18 +1,16 @@
 NAME		= webserv
 CXX 		= c++
 CXXFLAGS 	= -Wall -Wextra -Werror -std=c++98
-SRC 		= main.cpp ConfigParser.cpp HttpRequest.cpp ResponseBuild.cpp Server.cpp
+CPPFLAGS	= -Iinclude
+SRC 		= main.cpp src/ConfigParser.cpp src/HttpRequest.cpp src/ResponseBuilder.cpp src/Server.cpp src/ServerUtils.cpp src/ChunkedBodyParser.cpp src/AutoIndexGenerator.cpp src/GetHandler.cpp src/PostDeleteHandler.cpp src/ResponseUtils.cpp src/CGIHandler.cpp
 OBJ 		= $(SRC:.cpp=.o)
 
-# For debug build: make DEBUG=1
-ifeq ($(DEBUG),1)
-	CXXFLAGS += -DDEBUG
-endif
+
 
 all: $(NAME)
 
 $(NAME): $(OBJ)
-	$(CXX) $(CXXFLAGS) -o $(NAME) $(OBJ)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -o $(NAME) $(OBJ)
 
 clean:
 	rm -f $(OBJ)
@@ -22,4 +20,4 @@ fclean: clean
 
 re: fclean all
 
-.PHONY: all clean fclean re 
+.PHONY: all clean fclean re
