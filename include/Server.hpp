@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <ctime>
+#include "HttpRequest.hpp"
 #include "ServerConfig.hpp"
 
 #define CLIENT_TIMEOUT 60
@@ -32,10 +33,26 @@ struct Connection
     size_t file_size;
     size_t bytes_sent;
 
+    // POST upload streaming state
+    HttpRequest pendingRequest;
+    bool hasPendingRequest;
+    int upload_fd;
+    size_t upload_expected;
+    size_t upload_received;
+
+    // CGI stdin state
+    bool isCgiStdin;
+    int cgi_stdin_fd;
+    int cgi_stdin_source_fd;
+    std::string cgi_stdin_buffer;
+    size_t cgi_stdin_sent;
+
     Connection() : fd(-1), isServer(false), serverConfig(NULL), 
                    last_activity(time(NULL)), isCGI(false), 
                    client_fd(-1), isStreaming(false), stream_fd(-1), cgi_pid(-1),
-                   file_fd(-1), file_size(0), bytes_sent(0) {}
+                   file_fd(-1), file_size(0), bytes_sent(0),
+                   hasPendingRequest(false), upload_fd(-1), upload_expected(0), upload_received(0),
+                   isCgiStdin(false), cgi_stdin_fd(-1), cgi_stdin_source_fd(-1), cgi_stdin_sent(0) {}
 };
 
 class Server

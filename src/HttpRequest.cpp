@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <cerrno>
 
-HttpRequest::HttpRequest() {}
+HttpRequest::HttpRequest() : _upload_fd(-1), _contentLength(0), _bodyReceived(0), _complete(false) {}
 
 const std::string& HttpRequest::getMethod() const { return _method; }
 const std::string& HttpRequest::getPath() const { return _path; }
@@ -14,9 +14,16 @@ const std::string& HttpRequest::getVersion() const { return _version; }
 const std::map<std::string, std::string>& HttpRequest::getHeaders() const { return _headers; }
 const std::string& HttpRequest::getBody() const { return _body; }
 
+bool HttpRequest::isComplete() const { return _complete; }
+int HttpRequest::getUploadFd() const { return _upload_fd; }
+size_t HttpRequest::getContentLength() const { return _contentLength; }
+
 void HttpRequest::setMethod(const std::string& method) { _method = method; }
 void HttpRequest::setPath(const std::string& path) { _path = path; }
 void HttpRequest::setVersion(const std::string& version) { _version = version; }
+void HttpRequest::setUploadFd(int fd) { _upload_fd = fd; }
+void HttpRequest::setContentLength(size_t length) { _contentLength = length; }
+void HttpRequest::setComplete(bool complete) { _complete = complete; }
 
 static std::string trim(const std::string& s) 
 {
@@ -129,7 +136,7 @@ HttpRequest HttpRequest::parse(const std::string& raw_request)
         return req;
     }
 
-    // Otherwise, Extract body up to Content-Length, even when the body arrived only partially.
+    // Otherwise, extract body metadata from Content-Length without storing it in _body.
     std::map<std::string, std::string>::const_iterator it = req._headers.end();
     for (std::map<std::string, std::string>::const_iterator h = req._headers.begin(); h != req._headers.end(); ++h)
     {
@@ -140,13 +147,22 @@ HttpRequest HttpRequest::parse(const std::string& raw_request)
         size_t contentLength = 0;
         if (parseContentLength(it->second, contentLength))
         {
+            req._contentLength = contentLength;
             if (bodyStart < raw_request.size() && contentLength > 0)
             {
                 const size_t available = raw_request.size() - bodyStart;
-                const size_t toRead = (available < contentLength) ? available : contentLength;
-                req._body.append(raw_request, bodyStart, toRead);
+                req._bodyReceived = (available < contentLength) ? available : contentLength;
             }
+            req._complete = (req._bodyReceived >= req._contentLength);
         }
+        else
+        {
+            req._complete = true;
+        }
+    }
+    else
+    {
+        req._complete = true;
     }
 
     return req;

@@ -14,10 +14,16 @@ public:
     const std::string& getVersion() const;
     const std::map<std::string, std::string>& getHeaders() const;
     const std::string& getBody() const;
+    bool isComplete() const;
+    int getUploadFd() const;
+    size_t getContentLength() const;
 
     void setMethod(const std::string& method);
     void setPath(const std::string& path);
     void setVersion(const std::string& version);
+    void setUploadFd(int fd);
+    void setContentLength(size_t length);
+    void setComplete(bool complete);
 
 private:
     std::string _method;
@@ -25,6 +31,10 @@ private:
     std::string _version;
     std::map<std::string, std::string> _headers;
     std::string _body;
+    int _upload_fd;
+    size_t _contentLength;
+    size_t _bodyReceived;
+    bool _complete;
 };
 
 #endif 
