@@ -94,12 +94,92 @@ Location ConfigParser::parseLocation(std::ifstream& file, int& line_number)
             while (iss >> method)
                 loc.allowed_methods.push_back(method);
         }
+        else if (key == "cgi_pass")
+        {
+            if (!(iss >> loc.cgi_pass))
+                throw std::runtime_error("Missing value for 'cgi_pass' at line " + intToString(line_number));
+        }
+        else if (key == "client_max_body_size")
+        {
+            size_t value = 0;
+            if (!(iss >> value) || iss.fail())
+                throw std::runtime_error("Missing or invalid value for 'client_max_body_size' at line " + intToString(line_number));
+            loc.client_max_body_size = value;
+        }
     }
     return loc;
 }
 
+const Location* ServerConfig::matchLocationForRequest(const std::string& uri, const std::string& method) const
+{
+    const Location* bestPrefix = NULL;
+    size_t bestPrefixLength = 0;
+    const Location* bestSuffix = NULL;
+    size_t bestSuffixLength = 0;
+
+    for (size_t i = 0; i < locations.size(); ++i)
+    {
+        const Location& loc = locations[i];
+        if (loc.path.empty())
+            continue;
+
+        if (loc.path[0] == '.')
+        {
+            if (uri.size() >= loc.path.size() && uri.compare(uri.size() - loc.path.size(), loc.path.size(), loc.path) == 0)
+            {
+                if (loc.path.size() > bestSuffixLength)
+                {
+                    bestSuffix = &loc;
+                    bestSuffixLength = loc.path.size();
+                }
+            }
+        }
+        else if (uri.size() >= loc.path.size() && uri.compare(0, loc.path.size(), loc.path) == 0)
+        {
+            if (loc.path.size() > bestPrefixLength)
+            {
+                bestPrefix = &loc;
+                bestPrefixLength = loc.path.size();
+            }
+        }
+    }
+
+    if (bestSuffix != NULL)
+    {
+        if (!bestSuffix->allowed_methods.empty())
+        {
+            bool allowed = false;
+            for (size_t i = 0; i < bestSuffix->allowed_methods.size(); ++i)
+            {
+                if (bestSuffix->allowed_methods[i] == method)
+                {
+                    allowed = true;
+                    break;
+                }
+            }
+            if (allowed)
+                return bestSuffix;
+        }
+        else
+        {
+            return bestSuffix;
+        }
+    }
+
+    return bestPrefix;
+}
+
 void ConfigParser::applyDirective(ServerConfig& config, const std::string& key, std::istringstream& iss, int line_number)
 {
+    if (key == "client_max_body_size")
+    {
+        size_t value = 0;
+        if (!(iss >> value) || iss.fail())
+            throw std::runtime_error("Missing or invalid value for 'client_max_body_size' at line " + intToString(line_number));
+        config.client_max_body_size = value;
+        return;
+    }
+
     typedef void (*StaticHandlerFunc)(ServerConfig&, std::istringstream&, int);
 
     struct HandlerEntry 

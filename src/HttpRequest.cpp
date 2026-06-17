@@ -152,6 +152,14 @@ HttpRequest HttpRequest::parse(const std::string& raw_request)
             {
                 const size_t available = raw_request.size() - bodyStart;
                 req._bodyReceived = (available < contentLength) ? available : contentLength;
+                if (req._bodyReceived >= req._contentLength)
+                    req._body = raw_request.substr(bodyStart, req._bodyReceived);
+                else
+                    req._body.clear();
+            }
+            else
+            {
+                req._body.clear();
             }
             req._complete = (req._bodyReceived >= req._contentLength);
         }

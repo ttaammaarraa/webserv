@@ -15,7 +15,8 @@ public:
 	static std::string handle(
 		Connection* conn,
 		const HttpRequest& req,
-		const ServerConfig& conf
+		const ServerConfig& conf,
+		const std::string& cgiPass = std::string()
 	);
 };
 

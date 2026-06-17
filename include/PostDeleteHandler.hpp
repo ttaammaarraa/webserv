@@ -8,7 +8,7 @@ struct ServerConfig;
 
 class PostDeleteHandler {
 public:
-	static std::string handlePost(Connection* conn, const HttpRequest& req, const ServerConfig& conf);
+static std::string handlePost(Connection* conn, const HttpRequest& req, const ServerConfig& conf);
 	static std::string handleDelete(Connection* conn, const HttpRequest& req, const ServerConfig& conf);
 };
 

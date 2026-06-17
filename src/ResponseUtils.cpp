@@ -81,10 +81,16 @@ std::string ResponseUtils::buildErrorRes(int code, const ServerConfig& conf)
         body = "<html><body><h1>Error</h1></body></html>";
     std::ostringstream oss;
 
-    if (code == 404)
-        oss << "HTTP/1.1 404 Not Found\r\n";
+    if (code == 400)
+        oss << "HTTP/1.1 400 Bad Request\r\n";
     else if (code == 403)
         oss << "HTTP/1.1 403 Forbidden\r\n";
+    else if (code == 404)
+        oss << "HTTP/1.1 404 Not Found\r\n";
+    else if (code == 405)
+        oss << "HTTP/1.1 405 Method Not Allowed\r\n";
+    else if (code == 413)
+        oss << "HTTP/1.1 413 Payload Too Large\r\n";
     else
         oss << "HTTP/1.1 500 Internal Server Error\r\n";
 

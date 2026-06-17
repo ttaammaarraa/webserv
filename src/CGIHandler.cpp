@@ -88,35 +88,6 @@ std::string CGIHandler::buildResponseFromCGI(const std::string &output)
 	return oss.str();
 }
 
-static bool setNonBlocking(int fd)
-{
-	int flags = fcntl(fd, F_GETFL, 0);
-	if (flags == -1)
-		return false;
-	return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
-
-}
-
-static bool writeAllNonBlocking(int fd, const std::string &body)
-{
-	size_t totalWritten = 0;
-	while (totalWritten < body.size())
-	{
-		ssize_t bytes = write(fd, body.c_str() + totalWritten, body.size() - totalWritten);
-		if (bytes > 0)
-		{
-			totalWritten += static_cast<size_t>(bytes);
-			continue;
-		}
-		if (bytes < 0 && errno == EINTR)
-			continue;
-		if (bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-			return false;
-		return false;
-	}
-	return true;
-}
-
 static void closePipePair(int stdinPipe[2], int stdoutPipe[2])
 {
 	close(stdinPipe[0]);
@@ -125,7 +96,15 @@ static void closePipePair(int stdinPipe[2], int stdoutPipe[2])
 	close(stdoutPipe[1]);
 }
 
-static std::string launchCGI(const std::string &scriptPath, const HttpRequest &req, Connection *conn)
+static bool setNonBlockingFd(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags == -1)
+		return false;
+	return fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
+}
+
+static std::string launchCGI(const std::string &scriptPath, const HttpRequest &req, Connection *conn, const std::string &cgiPass)
 {
 	int stdinPipe[2];
 	int stdoutPipe[2];
@@ -158,7 +137,8 @@ static std::string launchCGI(const std::string &scriptPath, const HttpRequest &r
 		std::vector<std::string> envStrings;
 		envStrings.push_back("GATEWAY_INTERFACE=CGI/1.1");
 		envStrings.push_back("REQUEST_METHOD=" + req.getMethod());
-		envStrings.push_back("SCRIPT_FILENAME=" + scriptPath);
+		std::string scriptFilename = cgiPass.empty() ? scriptPath : cgiPass;
+		envStrings.push_back("SCRIPT_FILENAME=" + scriptFilename);
 		envStrings.push_back("SERVER_PROTOCOL=" + req.getVersion());
 		envStrings.push_back("REDIRECT_STATUS=200");
 		std::ostringstream oss;
@@ -166,9 +146,12 @@ static std::string launchCGI(const std::string &scriptPath, const HttpRequest &r
 		envStrings.push_back("CONTENT_LENGTH=" + oss.str());
 
 		const std::string &contentType = req.getHeaders().count("Content-Type")
-											 ? req.getHeaders().at("Content-Type")
-											 : "text/plain";
+			? req.getHeaders().at("Content-Type")
+			: "text/plain";
 		envStrings.push_back("CONTENT_TYPE=" + contentType);
+		envStrings.push_back(std::string("REQUEST_URI=") + req.getPath());
+		envStrings.push_back(std::string("PATH_INFO=") + req.getPath());
+		envStrings.push_back("SCRIPT_NAME=");
 
 		std::vector<char *> envp;
 		for (size_t i = 0; i < envStrings.size(); ++i)
@@ -176,7 +159,12 @@ static std::string launchCGI(const std::string &scriptPath, const HttpRequest &r
 		envp.push_back(0);
 
 		std::vector<char *> argv;
-		if (hasExtension(scriptPath, ".py"))
+		if (!cgiPass.empty())
+		{
+			argv.push_back(const_cast<char *>(cgiPass.c_str()));
+			argv.push_back(const_cast<char *>(scriptPath.c_str()));
+		}
+		else if (hasExtension(scriptPath, ".py"))
 		{
 			argv.push_back(const_cast<char *>("/usr/bin/python3"));
 			argv.push_back(const_cast<char *>(scriptPath.c_str()));
@@ -199,25 +187,31 @@ static std::string launchCGI(const std::string &scriptPath, const HttpRequest &r
 	close(stdinPipe[0]);
 	close(stdoutPipe[1]);
 
-	if (!setNonBlocking(stdoutPipe[0]) || !setNonBlocking(stdinPipe[1]))
+	if (!setNonBlockingFd(stdoutPipe[0]) || !setNonBlockingFd(stdinPipe[1]))
 	{
 		close(stdinPipe[1]);
 		close(stdoutPipe[0]);
 		kill(pid, SIGKILL);
-		waitpid(pid, NULL, WNOHANG);
+		waitpid(pid, NULL, 0);
 		return std::string();
 	}
 
 	const std::string &body = req.getBody();
-	if (!body.empty() && !writeAllNonBlocking(stdinPipe[1], body))
+	if (!body.empty())
+	{
+		conn->isCgiStdin = true;
+		conn->cgi_stdin_fd = stdinPipe[1];
+		conn->cgi_stdin_buffer = body;
+		conn->cgi_stdin_sent = 0;
+	}
+	else
 	{
 		close(stdinPipe[1]);
-		close(stdoutPipe[0]);
-		kill(pid, SIGKILL);
-		waitpid(pid, NULL, WNOHANG);
-		return std::string();
+		conn->isCgiStdin = false;
+		conn->cgi_stdin_fd = -1;
+		conn->cgi_stdin_buffer.clear();
+		conn->cgi_stdin_sent = 0;
 	}
-	close(stdinPipe[1]);
 
 	conn->stream_fd = stdoutPipe[0];
 	conn->cgi_pid = pid;
@@ -226,21 +220,34 @@ static std::string launchCGI(const std::string &scriptPath, const HttpRequest &r
 	return std::string();
 }
 
-std::string CGIHandler::handle(
-	Connection *conn,
-	const HttpRequest &req,
-	const ServerConfig &conf)
+std::string CGIHandler::handle(Connection *conn, const HttpRequest &req, const ServerConfig &conf, const std::string &cgiPass)
 {
-	(void)conn;
-
 	if (req.getPath().find("..") != std::string::npos)
 		return ResponseUtils::buildErrorRes(403, conf);
 
-	std::string scriptPath = ResponseUtils::joinPath(conf.root.empty() ? "./www" : conf.root, req.getPath());
+	std::string root = conf.root.empty() ? "./www" : conf.root;
+	std::string scriptPath = ResponseUtils::joinPath(root, req.getPath());
 
 	struct stat st;
-	if (stat(scriptPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
-		return ResponseUtils::buildErrorRes(404, conf);
+	if (!cgiPass.empty())
+	{
+		if (stat(scriptPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+		{
+			// For cgi_pass routes, the external CGI handler may accept the request path directly.
+			scriptPath = req.getPath();
+		}
+	}
+	else
+	{
+		if (stat(scriptPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+		{
+			scriptPath = req.getPath();
+			if (stat(scriptPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+			{
+				return ResponseUtils::buildErrorRes(404, conf);
+			}
+		}
+	}
 
-	return launchCGI(scriptPath, req, conn);
+	return launchCGI(scriptPath, req, conn, cgiPass);
 }

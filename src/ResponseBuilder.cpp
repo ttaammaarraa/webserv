@@ -36,8 +36,24 @@ std::string ResponseBuilder::handle(Connection* conn, const HttpRequest& req)
 	}
 
 	std::string method = req.getMethod();
-	if (CGIHandler::isCGI(req.getPath()))
-		return CGIHandler::handle(conn, req, *conn->serverConfig);
+    const Location* loc = conn->serverConfig->matchLocationForRequest(req.getPath(), method);
+    if (loc != NULL && !loc->allowed_methods.empty())
+    {
+        bool allowed = false;
+        for (size_t i = 0; i < loc->allowed_methods.size(); ++i)
+        {
+            if (loc->allowed_methods[i] == method)
+            {
+                allowed = true;
+                break;
+            }
+        }
+        if (!allowed)
+            return ResponseUtils::buildErrorRes(405, *conn->serverConfig);
+    }
+	bool isCgiRoute = (loc != NULL && !loc->cgi_pass.empty()) || CGIHandler::isCGI(req.getPath());
+	if (isCgiRoute)
+		return CGIHandler::handle(conn, req, *conn->serverConfig, loc ? loc->cgi_pass : std::string());
 	if (method == "GET" || method == "HEAD")
 		return GetHandler::handle(conn, req, *conn->serverConfig);
 	else if (method == "POST")

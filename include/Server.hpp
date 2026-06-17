@@ -27,6 +27,7 @@ struct Connection
     bool isStreaming;
     int stream_fd;
     pid_t cgi_pid;
+    bool cgi_reaped;
 
     // ⭐ File Streaming State Variables
     int file_fd;
@@ -39,6 +40,8 @@ struct Connection
     int upload_fd;
     size_t upload_expected;
     size_t upload_received;
+    bool isUpload;
+    std::string upload_buffer;
 
     // CGI stdin state
     bool isCgiStdin;
@@ -49,10 +52,11 @@ struct Connection
 
     Connection() : fd(-1), isServer(false), serverConfig(NULL), 
                    last_activity(time(NULL)), isCGI(false), 
-                   client_fd(-1), isStreaming(false), stream_fd(-1), cgi_pid(-1),
+                   client_fd(-1), isStreaming(false), stream_fd(-1), cgi_pid(-1), cgi_reaped(false),
                    file_fd(-1), file_size(0), bytes_sent(0),
                    hasPendingRequest(false), upload_fd(-1), upload_expected(0), upload_received(0),
-                   isCgiStdin(false), cgi_stdin_fd(-1), cgi_stdin_source_fd(-1), cgi_stdin_sent(0) {}
+                   isUpload(false), upload_buffer(),
+                   isCgiStdin(false), cgi_stdin_fd(-1), cgi_stdin_source_fd(-1), cgi_stdin_buffer(), cgi_stdin_sent(0) {}
 };
 
 class Server
@@ -70,6 +74,7 @@ class Server
         void handle_client(Connection* conn);
         void handle_client_write(Connection* conn);
         void handle_cgi(Connection* conn);
+        void handle_cgi_stdin(Connection* conn);
         void register_cgi_connection(Connection* clientConn);
         void setupEpoll();
         bool setupListeningSocket(const ServerConfig& serverConfig);
