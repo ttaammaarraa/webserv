@@ -15,12 +15,11 @@ std::string GetHandler::handle(Connection* conn, const HttpRequest& req, const S
     if (req.getPath().find("..") != std::string::npos)
         return ResponseUtils::buildErrorRes(403, conf);
 
-    // [إضافة الحارس]: إذا كان المسار يشير لمجلد ويفتقد الـ '/'، قم بعمل Redirect
-    // ملاحظة: نقوم بفحص ما إذا كان المسار فعلياً مجلداً قبل عمل Redirect
+   
     const Location* matchedLocation = conf.matchLocation(req.getPath());
     std::string effectiveRoot = (matchedLocation && !matchedLocation->root.empty()) ? matchedLocation->root : conf.root;
     std::string fullPath = ResponseUtils::joinPath(effectiveRoot, req.getPath());
-    
+
     struct stat st;
     if (stat(fullPath.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && !req.getPath().empty() && req.getPath()[req.getPath().size() - 1] != '/') {
         std::ostringstream redirect;
@@ -56,7 +55,7 @@ if (stat(filepath.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
     {
         std::string directoryPath = filepath;
         std::string indexPath = ResponseUtils::joinPath(directoryPath, effectiveIndex);
-        
+
         if (stat(indexPath.c_str(), &st) == 0)
             filepath = indexPath;
         else if (autoindexEnabled)
@@ -79,7 +78,7 @@ if (stat(filepath.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
             return ResponseUtils::buildErrorRes(404, conf);
         }
     }
-    
+
     if (stat(filepath.c_str(), &st) != 0)
         return ResponseUtils::buildErrorRes(404, conf);
     if (!(st.st_mode & S_IROTH))

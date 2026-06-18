@@ -191,12 +191,12 @@ void Server::cleanup_connection(Connection* conn)
     }
 }
 
-// ⭐ Razan's Timeout logic (Cleaned up)
+//  Razan's Timeout logic (Cleaned up)
 void Server::check_timeouts()
 {
     time_t now = time(NULL);
     std::map<int, Connection*>::iterator it = _connections.begin();
-    
+
     while (it != _connections.end())
     {
         Connection* conn = it->second;
@@ -239,7 +239,7 @@ void Server::handle_accept(Connection* serverConn)
     clientConn->isServer = false;
     clientConn->serverConfig = serverConn->serverConfig;
     clientConn->last_activity = time(NULL); // ⭐ Track time
-    
+
     _connections[client_fd] = clientConn;
 
     struct epoll_event ev;
@@ -265,7 +265,6 @@ void Server::handle_client(Connection* conn)
         return;
     }
 
-    // 1. معالجة الرفع (Streaming Upload)
     if (conn->isUpload)
     {
         size_t incoming = static_cast<size_t>(bytes);
@@ -300,7 +299,6 @@ void Server::handle_client(Connection* conn)
         return;
     }
 
-    // 2. تجميع الطلب (Request Buffering)
     _clientBuffers[conn->fd].append(buffer, bytes);
     size_t header_end = _clientBuffers[conn->fd].find("\r\n\r\n");
     if (header_end == std::string::npos) return;
@@ -309,7 +307,6 @@ void Server::handle_client(Connection* conn)
     const Location* matchedLocation = conn->serverConfig->matchLocationForRequest(request.getPath(), request.getMethod());
     bool is_cgi = (matchedLocation != NULL && !matchedLocation->cgi_pass.empty()) || CGIHandler::isCGI(request.getPath());
 
-    // 3. دروع الحماية (Validation)
     size_t maxBody = conn->serverConfig->client_max_body_size;
     if (matchedLocation != NULL && matchedLocation->client_max_body_size > 0)
         maxBody = matchedLocation->client_max_body_size;
@@ -322,7 +319,6 @@ void Server::handle_client(Connection* conn)
         return;
     }
 
-    // انتظار اكتمال الـ POST للـ CGI
     if (!request.isComplete() && (request.getMethod() == "POST" && is_cgi)) return;
 
     if (matchedLocation && !matchedLocation->allowed_methods.empty())
@@ -330,7 +326,7 @@ void Server::handle_client(Connection* conn)
         bool allowed = false;
         for (size_t i = 0; i < matchedLocation->allowed_methods.size(); ++i)
             if (matchedLocation->allowed_methods[i] == request.getMethod()) { allowed = true; break; }
-        
+
         if (!allowed)
         {
             _clientWriteBuffers[conn->fd] = ResponseUtils::buildErrorRes(405, *conn->serverConfig);
@@ -340,7 +336,6 @@ void Server::handle_client(Connection* conn)
         }
     }
 
-    // 4. تنفيذ الـ CGI
     if (is_cgi)
     {
         conn->pendingRequest = request;
@@ -357,10 +352,9 @@ void Server::handle_client(Connection* conn)
         return;
     }
 
-    // 5. منطق الـ POST العادي (Upload)
     if (request.getMethod() == "POST")
     {
-        std::string filepath = (matchedLocation && !matchedLocation->upload_path.empty()) 
+        std::string filepath = (matchedLocation && !matchedLocation->upload_path.empty())
             ? ResponseUtils::joinPath(matchedLocation->upload_path, request.getPath())
             : ResponseUtils::joinPath(conn->serverConfig->root, request.getPath());
 
@@ -381,7 +375,7 @@ void Server::handle_client(Connection* conn)
         return;
     }
 
-    // 6. الطلبات العادية (GET/DELETE)
+    // 6.(GET/DELETE)
     std::string headers = ResponseBuilder::handle(conn, request);
     _clientWriteBuffers[conn->fd] = headers;
     epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
@@ -393,32 +387,28 @@ void Server::register_cgi_connection(Connection* clientConn)
     if (!clientConn || clientConn->stream_fd < 0)
         return;
 
-    // 1. تسجيل مخرج السكربت (Stdout Pipe)
     Connection* cgiConn = new Connection();
     cgiConn->fd = clientConn->stream_fd;
     cgiConn->isServer = false;
     cgiConn->isCGI = true;
     cgiConn->client_fd = clientConn->fd;
-    cgiConn->cgi_pid = clientConn->cgi_pid; // نحتفظ بالـ PID هنا للتحكم لاحقاً
+    cgiConn->cgi_pid = clientConn->cgi_pid;
     cgiConn->serverConfig = clientConn->serverConfig;
     cgiConn->last_activity = time(NULL);
 
     _connections[cgiConn->fd] = cgiConn;
 
     struct epoll_event ev;
-    ev.events = EPOLLIN; // ننتظر الرد من السكربت
+    ev.events = EPOLLIN;
     ev.data.ptr = cgiConn;
-    
+
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, cgiConn->fd, &ev) < 0)
     {
-        // إذا فشل التسجيل، نقتل العملية فوراً وننظف
         kill(clientConn->cgi_pid, SIGKILL);
         cleanup_connection(cgiConn);
-        // ... (باقي كود معالجة الخطأ 500)
         return;
     }
 
-    // 2. تسجيل مدخل السكربت (Stdin Pipe) للـ POST Data
     if (clientConn->isCgiStdin && clientConn->cgi_stdin_fd >= 0)
     {
         Connection* stdinConn = new Connection();
@@ -433,25 +423,22 @@ void Server::register_cgi_connection(Connection* clientConn)
 
         _connections[stdinConn->fd] = stdinConn;
         struct epoll_event stdinEv;
-        stdinEv.events = EPOLLOUT; // ننتظر حتى يصبح الـ pipe جاهزاً للكتابة
+        stdinEv.events = EPOLLOUT;
         stdinEv.data.ptr = stdinConn;
-        
+
         if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, stdinConn->fd, &stdinEv) < 0)
         {
             kill(clientConn->cgi_pid, SIGKILL);
             cleanup_connection(stdinConn);
             cleanup_connection(cgiConn);
-            // ... (باقي كود معالجة الخطأ 500)
             return;
         }
     }
 
-    // 3. التنظيف النهائي لبيانات الـ Connection
-    clientConn->isCGI = false; // تم النقل بنجاح
+    clientConn->isCGI = false;
     clientConn->isCgiStdin = false;
     clientConn->stream_fd = -1;
     clientConn->cgi_stdin_fd = -1;
-    // لا نمسح cgi_pid من clientConn إلا بعد انتهاء العملية في cleanup
 }
 
 void Server::handle_cgi(Connection* conn)
@@ -462,12 +449,11 @@ void Server::handle_cgi(Connection* conn)
     conn->last_activity = time(NULL);
 
     char buffer[4096];
-    // التأكد من وجود العميل قبل الكتابة في الـ buffer
     if (_connections.find(conn->client_fd) == _connections.end()) {
         cleanup_connection(conn);
         return;
     }
-    
+
     std::string &clientBuffer = _clientWriteBuffers[conn->client_fd];
     bool sawEOF = false;
 
@@ -479,7 +465,7 @@ void Server::handle_cgi(Connection* conn)
             clientBuffer.append(buffer, static_cast<size_t>(bytes));
             continue;
         }
-        if (bytes == 0) // السكربت أنهى الإرسال (EOF)
+        if (bytes == 0)
         {
             sawEOF = true;
             break;
@@ -489,21 +475,17 @@ void Server::handle_cgi(Connection* conn)
             if (errno == EINTR)
                 continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK)
-                break; // لا يزال هناك بيانات قادمة، انتظر الـ Epoll التالي
+                break;
 
-            // حالة خطأ في الـ read
             clientBuffer = ResponseUtils::buildErrorRes(500, *conn->serverConfig);
             sawEOF = true;
             break;
         }
-        // bytes == 0 handled above; should never get here
     }
 
-    // [الترتيب الصحيح الذي طلبته]: لا تغلقي شيئاً إلا إذا انتهى الـ CGI تماماً
     if (!sawEOF)
         return;
 
-    // Ensure CGI child is reaped after EOF before sending the final response.
     if (conn->cgi_pid > 0 && !conn->cgi_reaped)
     {
         pid_t waited = waitpid(conn->cgi_pid, NULL, 0);
@@ -513,7 +495,6 @@ void Server::handle_cgi(Connection* conn)
             conn->cgi_reaped = true;
     }
 
-    // الآن فقط نقوم بمعالجة الرد (بناء الـ HTTP Response)
     if (clientBuffer.empty())
     {
         clientBuffer = ResponseUtils::buildErrorRes(500, *conn->serverConfig);
@@ -523,11 +504,9 @@ void Server::handle_cgi(Connection* conn)
         clientBuffer = CGIHandler::buildResponseFromCGI(clientBuffer);
     }
 
-    // الآن وبعد اكتمال الرد، نقوم بتنظيف الـ pipe
     int clientFd = conn->client_fd;
     cleanup_connection(conn);
 
-    // تحويل socket العميل ليكون جاهزاً للإرسال (EPOLLOUT)
     std::map<int, Connection*>::iterator it = _connections.find(clientFd);
     if (it != _connections.end())
     {
@@ -681,10 +660,10 @@ void Server::run()
                 continue;
             }
 
-            if (conn->isServer) 
+            if (conn->isServer)
             {
                 handle_accept(conn);
-            } 
+            }
             else
             {
                 int clientFd = conn->fd;
