@@ -17,10 +17,9 @@ struct Connection
     int fd;
     bool isServer;
     ServerConfig* serverConfig;
-    
-    // ⭐ Razan's Additions (Merged)
+
     time_t last_activity;
-    
+
     // CGI & Streaming placeholders
     bool isCGI;
     int client_fd; // Fix: To remember who requested the CGI!
@@ -29,7 +28,7 @@ struct Connection
     pid_t cgi_pid;
     bool cgi_reaped;
 
-    // ⭐ File Streaming State Variables
+    // File Streaming State Variables
     int file_fd;
     size_t file_size;
     size_t bytes_sent;
@@ -50,8 +49,8 @@ struct Connection
     std::string cgi_stdin_buffer;
     size_t cgi_stdin_sent;
 
-    Connection() : fd(-1), isServer(false), serverConfig(NULL), 
-                   last_activity(time(NULL)), isCGI(false), 
+    Connection() : fd(-1), isServer(false), serverConfig(NULL),
+                   last_activity(time(NULL)), isCGI(false),
                    client_fd(-1), isStreaming(false), stream_fd(-1), cgi_pid(-1), cgi_reaped(false),
                    file_fd(-1), file_size(0), bytes_sent(0),
                    hasPendingRequest(false), upload_fd(-1), upload_expected(0), upload_received(0),
@@ -68,7 +67,7 @@ class Server
         std::map<int, std::string> _clientWriteBuffers;
         std::map<int, Connection*> _connections;
         std::map<int, ServerConfig> _listenerConfigsByFd;
-        
+
         void cleanup_connection(Connection* conn);
         void handle_accept(Connection* serverConn);
         void handle_client(Connection* conn);
@@ -80,10 +79,9 @@ class Server
         bool setupListeningSocket(const ServerConfig& serverConfig);
         void addServerToEpoll(int serverFd);
         void buildListenerGroups(std::map< std::pair<int, std::string>, ServerConfig >& groups) const;
-        
-        // ⭐ Razan's Timeout Function
+
         void check_timeouts();
-        
+
         bool stopped;
 
         Server(const Server& other);

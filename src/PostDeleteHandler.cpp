@@ -10,8 +10,6 @@
 
 std::string PostDeleteHandler::handlePost(Connection* conn, const HttpRequest& req, const ServerConfig& conf)
 {
-    // بما أن Server.cpp قام بمعالجة الرفع (Streaming) بالفعل وفتح الملف،
-    // كل ما نحتاجه هنا هو إرجاع رد 201 Created لإعلام التستر بأن العملية تمت بنجاح.
     (void)conn;
     (void)req;
     (void)conf;
@@ -27,7 +25,6 @@ std::string PostDeleteHandler::handlePost(Connection* conn, const HttpRequest& r
 std::string PostDeleteHandler::handleDelete(Connection* conn, const HttpRequest& req, const ServerConfig& conf)
 {
     (void)conn;
-    // الحماية من الـ Path Traversal
     if (req.getPath().find("..") != std::string::npos)
         return ResponseUtils::buildErrorRes(403, conf);
 
@@ -35,7 +32,6 @@ std::string PostDeleteHandler::handleDelete(Connection* conn, const HttpRequest&
     std::string filepath;
     std::string suffixPath = req.getPath();
 
-    // استخراج المسار الصحيح بناءً على الـ Location
     if (matchedLocation != NULL && !matchedLocation->path.empty() && matchedLocation->path != "/"
         && suffixPath.compare(0, matchedLocation->path.size(), matchedLocation->path) == 0)
     {
@@ -50,15 +46,12 @@ std::string PostDeleteHandler::handleDelete(Connection* conn, const HttpRequest&
     if (stat(filepath.c_str(), &st) != 0)
         return ResponseUtils::buildErrorRes(404, conf);
 
-    // منع حذف المجلدات
     if (S_ISDIR(st.st_mode))
         return ResponseUtils::buildErrorRes(403, conf);
 
-    // التحقق من صلاحيات القراءة
     if (!(st.st_mode & S_IROTH))
         return ResponseUtils::buildErrorRes(403, conf);
 
-    // تنفيذ الحذف
     if (unlink(filepath.c_str()) != 0)
         return ResponseUtils::buildErrorRes((errno == EACCES) ? 403 : 500, conf);
 
