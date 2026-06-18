@@ -1,0 +1,253 @@
+#include "CGIHandler.hpp"
+
+#include "HttpRequest.hpp"
+#include "ResponseUtils.hpp"
+#include "ServerConfig.hpp"
+#include "Server.hpp"
+
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
+#include <sstream>
+#include <vector>
+#include <cstring>
+
+bool CGIHandler::isCGI(const std::string &path)
+{
+	size_t dot = path.rfind('.');
+	if (dot == std::string::npos)
+		return false;
+
+	std::string ext = path.substr(dot);
+	return ext == ".py" || ext == ".php" || ext == ".cgi";
+}
+
+static bool hasExtension(const std::string &path, const std::string &ext)
+{
+	return path.size() >= ext.size() && path.compare(path.size() - ext.size(), ext.size(), ext) == 0;
+}
+
+std::string CGIHandler::buildResponseFromCGI(const std::string &output)
+{
+	std::string headers;
+	std::string body;
+	size_t sep = output.find("\r\n\r\n");
+
+	if (sep != std::string::npos)
+	{
+		headers = output.substr(0, sep);
+		body = output.substr(sep + 4);
+	}
+	else
+	{
+		body = output;
+	}
+
+	std::istringstream headerStream(headers);
+	std::string line;
+	std::string responseHeaders;
+	bool hasContentType = false;
+	std::string statusLine = "HTTP/1.1 200 OK";
+
+	while (std::getline(headerStream, line))
+	{
+		if (!line.empty() && line[line.size() - 1] == '\r')
+			line.erase(line.end() - 1);
+
+		if (line.empty())
+			continue;
+
+		if (line.find("Status:") == 0)
+		{
+			std::string value = line.substr(7);
+			while (!value.empty() && value[0] == ' ')
+				value.erase(value.begin());
+			if (!value.empty())
+				statusLine = "HTTP/1.1 " + value;
+			continue;
+		}
+
+		if (line.find("Content-Type:") == 0)
+			hasContentType = true;
+
+		responseHeaders += line + "\r\n";
+	}
+
+	if (!hasContentType)
+		responseHeaders += "Content-Type: text/html\r\n";
+
+	std::ostringstream oss;
+	oss << statusLine << "\r\n";
+	oss << responseHeaders;
+	oss << "Content-Length: " << body.size() << "\r\n";
+	oss << "\r\n";
+	oss << body;
+	return oss.str();
+}
+
+static void closePipePair(int stdinPipe[2], int stdoutPipe[2])
+{
+	close(stdinPipe[0]);
+	close(stdinPipe[1]);
+	close(stdoutPipe[0]);
+	close(stdoutPipe[1]);
+}
+
+static bool setNonBlockingFd(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags == -1)
+		return false;
+	return fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
+}
+
+static std::string launchCGI(const std::string &scriptPath, const HttpRequest &req, Connection *conn, const std::string &cgiPass)
+{
+	int stdinPipe[2];
+	int stdoutPipe[2];
+	if (pipe(stdinPipe) != 0)
+		return std::string();
+	if (pipe(stdoutPipe) != 0)
+	{
+		close(stdinPipe[0]);
+		close(stdinPipe[1]);
+		return std::string();
+	}
+
+	pid_t pid = fork();
+	if (pid < 0)
+	{
+		closePipePair(stdinPipe, stdoutPipe);
+		return std::string();
+	}
+
+	if (pid == 0)
+	{
+		dup2(stdinPipe[0], STDIN_FILENO);
+		dup2(stdoutPipe[1], STDOUT_FILENO);
+
+		close(stdinPipe[0]);
+		close(stdinPipe[1]);
+		close(stdoutPipe[0]);
+		close(stdoutPipe[1]);
+
+		std::vector<std::string> envStrings;
+		envStrings.push_back("GATEWAY_INTERFACE=CGI/1.1");
+		envStrings.push_back("REQUEST_METHOD=" + req.getMethod());
+		std::string scriptFilename = cgiPass.empty() ? scriptPath : cgiPass;
+		envStrings.push_back("SCRIPT_FILENAME=" + scriptFilename);
+		envStrings.push_back("SERVER_PROTOCOL=" + req.getVersion());
+		envStrings.push_back("REDIRECT_STATUS=200");
+		std::ostringstream oss;
+		oss << req.getBody().size();
+		envStrings.push_back("CONTENT_LENGTH=" + oss.str());
+
+		const std::string &contentType = req.getHeaders().count("Content-Type")
+			? req.getHeaders().at("Content-Type")
+			: "text/plain";
+		envStrings.push_back("CONTENT_TYPE=" + contentType);
+		envStrings.push_back(std::string("REQUEST_URI=") + req.getPath());
+		envStrings.push_back(std::string("PATH_INFO=") + req.getPath());
+		envStrings.push_back("SCRIPT_NAME=");
+
+		std::vector<char *> envp;
+		for (size_t i = 0; i < envStrings.size(); ++i)
+			envp.push_back(const_cast<char *>(envStrings[i].c_str()));
+		envp.push_back(0);
+
+		std::vector<char *> argv;
+		if (!cgiPass.empty())
+		{
+			argv.push_back(const_cast<char *>(cgiPass.c_str()));
+			argv.push_back(const_cast<char *>(scriptPath.c_str()));
+		}
+		else if (hasExtension(scriptPath, ".py"))
+		{
+			argv.push_back(const_cast<char *>("/usr/bin/python3"));
+			argv.push_back(const_cast<char *>(scriptPath.c_str()));
+		}
+		else if (hasExtension(scriptPath, ".php"))
+		{
+			argv.push_back(const_cast<char *>("/usr/bin/php-cgi"));
+			argv.push_back(const_cast<char *>(scriptPath.c_str()));
+		}
+		else
+		{
+			argv.push_back(const_cast<char *>(scriptPath.c_str()));
+		}
+		argv.push_back(0);
+
+		execve(argv[0], &argv[0], &envp[0]);
+		_exit(127);
+	}
+
+	close(stdinPipe[0]);
+	close(stdoutPipe[1]);
+
+	if (!setNonBlockingFd(stdoutPipe[0]) || !setNonBlockingFd(stdinPipe[1]))
+	{
+		close(stdinPipe[1]);
+		close(stdoutPipe[0]);
+		kill(pid, SIGKILL);
+		waitpid(pid, NULL, 0);
+		return std::string();
+	}
+
+	const std::string &body = req.getBody();
+	if (!body.empty())
+	{
+		conn->isCgiStdin = true;
+		conn->cgi_stdin_fd = stdinPipe[1];
+		conn->cgi_stdin_buffer = body;
+		conn->cgi_stdin_sent = 0;
+	}
+	else
+	{
+		close(stdinPipe[1]);
+		conn->isCgiStdin = false;
+		conn->cgi_stdin_fd = -1;
+		conn->cgi_stdin_buffer.clear();
+		conn->cgi_stdin_sent = 0;
+	}
+
+	conn->stream_fd = stdoutPipe[0];
+	conn->cgi_pid = pid;
+	conn->client_fd = conn->fd;
+	conn->isCGI = true;
+	return std::string();
+}
+
+std::string CGIHandler::handle(Connection *conn, const HttpRequest &req, const ServerConfig &conf, const std::string &cgiPass)
+{
+	if (req.getPath().find("..") != std::string::npos)
+		return ResponseUtils::buildErrorRes(403, conf);
+
+	std::string root = conf.root.empty() ? "./www" : conf.root;
+	std::string scriptPath = ResponseUtils::joinPath(root, req.getPath());
+
+	struct stat st;
+	if (!cgiPass.empty())
+	{
+		if (stat(scriptPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+		{
+			// For cgi_pass routes, the external CGI handler may accept the request path directly.
+			scriptPath = req.getPath();
+		}
+	}
+	else
+	{
+		if (stat(scriptPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+		{
+			scriptPath = req.getPath();
+			if (stat(scriptPath.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+			{
+				return ResponseUtils::buildErrorRes(404, conf);
+			}
+		}
+	}
+
+	return launchCGI(scriptPath, req, conn, cgiPass);
+}
