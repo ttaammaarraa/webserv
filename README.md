@@ -1,0 +1,58 @@
+*This project has been created as part of the 42 curriculum by taabu-fe , aal-joul , rhasan.*
+
+# Webserv
+
+## Description
+Webserv is a custom HTTP/1.1 web server written entirely in C++98. The goal of this project is to deeply understand the Hypertext Transfer Protocol (HTTP), Unix socket programming, and non-blocking I/O multiplexing. 
+
+The server is built using an event-driven architecture powered by `epoll`. It is designed to be highly resilient, handling multiple concurrent client connections without crashing, hanging, or using thread pools. It supports GET, POST, and DELETE methods, serves static websites, handles file uploads, generates autoindex directory listings, and executes CGI scripts (like PHP and Python) completely asynchronously.
+
+## Instructions
+**Prerequisites:**
+This project requires a Unix-based operating system that supports the `epoll` system call. You will also need a standard C++ compiler (`c++`, `g++`, or `clang++`).
+
+**Compilation:**
+To compile the server, run the following command at the root of the repository. This will use the strict `-Wall -Wextra -Werror -std=c++98` flags:
+
+    make
+
+Other available make rules: `clean`, `fclean`, `re`.
+
+**Execution:**
+Run the compiled executable and provide a configuration file as an argument:
+
+    ./webserv default.conf
+
+If no configuration file is provided, the program will attempt to run using a default setup. You can test the server using any standard web browser or command-line tools like `curl` and `telnet`.
+
+## Resources
+*## Resources
+**Networking & Sockets:**
+* [Beej's Guide to Network Programming](https://beej.us/guide/bgnet/)
+* [IBM - Nonblocking I/O and Sockets](https://developer.ibm.com/articles/l-async/)
+* [TCP Socket Programming & HTTP](https://www.youtube.com/watch?v=bdIiTxtMaKB)
+* [Linux man-pages (epoll)](https://man7.org/linux/man-pages/man7/epoll.7.html)
+
+**HTTP Protocol & CGI:**
+* [MDN - HTTP Overview](https://developer.mozilla.org/en-US/docs/Web/HTTP)
+* [MDN - HTTP Status Codes](https://developer.mozilla.org/en-US/docs/Web/HTTP/Status)
+* [CGI (Common Gateway Interface) Explained](https://en.wikipedia.org/wiki/Common_Gateway_Interface)
+
+**RFCs (Official Specifications):**
+* [RFC 9110 - HTTP Semantics](https://datatracker.ietf.org/doc/html/rfc9110)
+* [RFC 9112 - HTTP/1.1](https://datatracker.ietf.org/doc/html/rfc9112)
+* [RFC 3875 - CGI](https://datatracker.ietf.org/doc/html/rfc3875)
+* [RFC 3986 - (URI) Generic Syntax](https://datatracker.ietf.org/doc/html/rfc3986)
+
+**Testing & Tools:**
+* [Postman](https://www.postman.com/): Send custom HTTP requests to the server.
+* [Wireshark](https://www.wireshark.org/): Capture and analyze request/response traffic.
+* [Siege](https://github.com/JoeDog/siege): Load testing to ensure server stability under pressure.
+* [Nginx](https://nginx.org/en/docs/): Used as a reference for configuration file logic and behavior.
+
+## AI Usage
+During the development of this project, I used Gemini (AI Assistant) as an architectural sounding board and debugging assistant. Specifically, the AI helped with:
+
+* **Debugging Complex Logic:** Discussing the safest way to implement a full-duplex non-blocking `epoll` loop (handling `EPOLLIN` and `EPOLLOUT` simultaneously) and placing map-guards to prevent segmentation faults during sudden client hangups.
+* **Strict C++98 Compliance:** Ensuring the codebase strictly adheres to the C++98 standard. For instance, Gemini helped replace modern C++20 functions (like `std::string::starts_with()`) with compliant alternatives (`std::string::compare()`).
+* **Enforcing Subject Rules:** Identifying and replacing forbidden system calls (such as swapping `pread()` with standard sequential `read()`) to guarantee the project met all 42 School requirements. All AI-assisted logic was heavily reviewed, modified, and integrated manually by the team.
