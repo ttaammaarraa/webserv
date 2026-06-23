@@ -7,8 +7,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
-
-std::string PostDeleteHandler::handlePost(Connection* conn, const HttpRequest& req, const ServerConfig& conf)
+#include <fstream>
+#include <iostream>
+/*std::string PostDeleteHandler::handlePost(Connection* conn, const HttpRequest& req, const ServerConfig& conf)
 {
     (void)conn;
     (void)req;
@@ -19,6 +20,29 @@ std::string PostDeleteHandler::handlePost(Connection* conn, const HttpRequest& r
     oss << "Content-Length: 0\r\n";
     oss << "Connection: close\r\n";
     oss << "\r\n";
+    return oss.str();
+}*/
+
+std::string PostDeleteHandler::handlePost(Connection* conn, const HttpRequest& req, const ServerConfig& conf)
+{
+	    (void)conn;
+    // 1. تحديد المسار الذي يجب أن يُحفظ فيه الملف
+    std::string root = conf.root.empty() ? "./www" : conf.root;
+    std::string filepath = ResponseUtils::joinPath(root, req.getPath());
+
+    // 2. كتابة محتوى الـ Body في الملف
+    std::ofstream ofs(filepath.c_str(), std::ios::binary);
+    if (!ofs.is_open())
+        return ResponseUtils::buildErrorRes(403, conf);
+
+    ofs.write(req.getBody().c_str(), req.getBody().size());
+    ofs.close();
+
+    // 3. الرد الناجح
+    std::ostringstream oss;
+    oss << "HTTP/1.1 201 Created\r\n"
+        << "Content-Length: 0\r\n"
+        << "Connection: close\r\n\r\n";
     return oss.str();
 }
 

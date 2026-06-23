@@ -253,133 +253,177 @@ void Server::handle_accept(Connection* serverConn)
 
 void Server::handle_client(Connection* conn)
 {
-    conn->last_activity = time(NULL);
+	conn->last_activity = time(NULL);
 
-    char buffer[4096];
-    int bytes = recv(conn->fd, buffer, sizeof(buffer), 0);
+	char buffer[4096];
+	int bytes = recv(conn->fd, buffer, sizeof(buffer), 0);
 
-    if (bytes <= 0)
-    {
-        cleanup_connection(conn);
-        std::cout << "Client disconnected\n";
-        return;
-    }
+	if (bytes <= 0)
+	{
+		cleanup_connection(conn);
+		std::cout << "Client disconnected\n";
+		return;
+	}
 
-    if (conn->isUpload)
-    {
-        size_t incoming = static_cast<size_t>(bytes);
-        size_t remaining = conn->upload_expected - conn->upload_received;
-        size_t toWrite = (incoming < remaining) ? incoming : remaining;
+	if (conn->isUpload)
+	{
+		size_t incoming = static_cast<size_t>(bytes);
+		size_t remaining = conn->upload_expected - conn->upload_received;
+		size_t toWrite = (incoming < remaining) ? incoming : remaining;
 
-        ssize_t written = write(conn->upload_fd, buffer, toWrite);
-        if (written < 0)
-        {
-            if (errno == EINTR) return;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                if (toWrite > 0) conn->upload_buffer.append(buffer, toWrite);
-                return;
-            }
-            cleanup_connection(conn);
-            return;
-        }
+		ssize_t written = write(conn->upload_fd, buffer, toWrite);
+		if (written < 0)
+		{
+			// if (erno == EINTR) return; r
+			// if (erno == EAGAIN || erno == EWOULDBLOCK) rr
+			// {
+			//     if (toWrite > 0) conn->upload_buffer.append(buffer, toWrite);
+			//     return;
+			// }
+			cleanup_connection(conn);
+			return;
+		}
 
-        conn->upload_received += static_cast<size_t>(written);
-        if (conn->upload_received >= conn->upload_expected)
-        {
-            close(conn->upload_fd);
-            conn->upload_fd = -1;
-            conn->isUpload = false;
-            conn->hasPendingRequest = false;
+		conn->upload_received += static_cast<size_t>(written);
+		if (conn->upload_received >= conn->upload_expected)
+		{
+			close(conn->upload_fd);
+			conn->upload_fd = -1;
+			conn->isUpload = false;
+			conn->hasPendingRequest = false;
 
-            _clientWriteBuffers[conn->fd] = ResponseBuilder::handle(conn, conn->pendingRequest);
-            epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
-            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
-        }
-        return;
-    }
+			_clientWriteBuffers[conn->fd] = ResponseBuilder::handle(conn, conn->pendingRequest);
+			epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
+			epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+		}
+		return;
+	}
 
-    _clientBuffers[conn->fd].append(buffer, bytes);
-    size_t header_end = _clientBuffers[conn->fd].find("\r\n\r\n");
-    if (header_end == std::string::npos) return;
+	_clientBuffers[conn->fd].append(buffer, bytes);
+	size_t header_end = _clientBuffers[conn->fd].find("\r\n\r\n");
+	if (header_end == std::string::npos) return;
 
-    HttpRequest request = HttpRequest::parse(_clientBuffers[conn->fd]);
-    const Location* matchedLocation = conn->serverConfig->matchLocationForRequest(request.getPath(), request.getMethod());
-    bool is_cgi = (matchedLocation != NULL && !matchedLocation->cgi_pass.empty()) || CGIHandler::isCGI(request.getPath());
+	HttpRequest request = HttpRequest::parse(_clientBuffers[conn->fd]);
+	const Location* matchedLocation = conn->serverConfig->matchLocationForRequest(request.getPath(), request.getMethod());
+	bool is_cgi = (matchedLocation != NULL && !matchedLocation->cgi_pass.empty()) || CGIHandler::isCGI(request.getPath());
 
-    size_t maxBody = conn->serverConfig->client_max_body_size;
-    if (matchedLocation != NULL && matchedLocation->client_max_body_size > 0)
-        maxBody = matchedLocation->client_max_body_size;
+	size_t maxBody = conn->serverConfig->client_max_body_size;
+	if (matchedLocation != NULL && matchedLocation->client_max_body_size > 0)
+		maxBody = matchedLocation->client_max_body_size;
 
-    if (request.getContentLength() > maxBody)
-    {
-        _clientWriteBuffers[conn->fd] = ResponseUtils::buildErrorRes(413, *conn->serverConfig);
-        epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
-        epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
-        return;
-    }
+	if (request.getContentLength() > maxBody)
+	{
+		_clientWriteBuffers[conn->fd] = ResponseUtils::buildErrorRes(413, *conn->serverConfig);
+		epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
+		epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+		return;
+	}
 
-    if (!request.isComplete() && (request.getMethod() == "POST" && is_cgi)) return;
+	if (!request.isComplete())
+		return;
+	// if(request.getMethod() == "POST" && is_cgi)
 
-    if (matchedLocation && !matchedLocation->allowed_methods.empty())
-    {
-        bool allowed = false;
-        for (size_t i = 0; i < matchedLocation->allowed_methods.size(); ++i)
-            if (matchedLocation->allowed_methods[i] == request.getMethod()) { allowed = true; break; }
 
-        if (!allowed)
-        {
-            _clientWriteBuffers[conn->fd] = ResponseUtils::buildErrorRes(405, *conn->serverConfig);
-            epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
-            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
-            return;
-        }
-    }
 
-    if (is_cgi)
-    {
-        conn->pendingRequest = request;
-        std::string err = CGIHandler::handle(conn, request, *conn->serverConfig,
-            matchedLocation ? matchedLocation->cgi_pass : std::string());
-        if (!err.empty())
-        {
-            _clientWriteBuffers[conn->fd] = err;
-            epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
-            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
-            return;
-        }
-        register_cgi_connection(conn);
-        return;
-    }
+	if (matchedLocation && !matchedLocation->allowed_methods.empty())
+	{
+		bool allowed = false;
+		for (size_t i = 0; i < matchedLocation->allowed_methods.size(); ++i)
+			if (matchedLocation->allowed_methods[i] == request.getMethod()) { allowed = true; break; }
 
-    if (request.getMethod() == "POST")
-    {
-        std::string filepath = (matchedLocation && !matchedLocation->upload_path.empty())
-            ? ResponseUtils::joinPath(matchedLocation->upload_path, request.getPath())
-            : ResponseUtils::joinPath(conn->serverConfig->root, request.getPath());
+		if (!allowed)
+		{
+			_clientWriteBuffers[conn->fd] = ResponseUtils::buildErrorRes(405, *conn->serverConfig);
+			epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
+			epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+			return;
+		}
+	}
 
-        int fd = open(filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, 0644);
-        if (fd < 0)
-        {
-            _clientWriteBuffers[conn->fd] = ResponseUtils::buildErrorRes(403, *conn->serverConfig);
-            epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
-            epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
-            return;
-        }
+	if (is_cgi)
+	{
+		conn->pendingRequest = request;
+		std::string err = CGIHandler::handle(conn, request, *conn->serverConfig,
+			matchedLocation ? matchedLocation->cgi_pass : std::string());
+		if (!err.empty())
+		{
+			_clientWriteBuffers[conn->fd] = err;
+			epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
+			epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+			return;
+		}
+		register_cgi_connection(conn);
+		return;
+	}
 
-        conn->upload_fd = fd;
-        conn->upload_expected = request.getContentLength();
-        conn->upload_received = 0;
-        conn->isUpload = true;
-        conn->pendingRequest = request;
-        return;
-    }
+	if (request.getMethod() == "POST")
+	{
+		if (request.getPath().find("..") != std::string::npos)
+		{
+			_clientWriteBuffers[conn->fd] = ResponseUtils::buildErrorRes(403, *conn->serverConfig);
+			epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
+			epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+			return;
+		}
+		//if (request.getPath().find("..") != std::string::npos)
+		//return buildErrorRes(403);
+		std::string filepath = (matchedLocation && !matchedLocation->upload_path.empty())
+			? ResponseUtils::joinPath(matchedLocation->upload_path, request.getPath())
+			: ResponseUtils::joinPath(conn->serverConfig->root, request.getPath());
 
-    // 6.(GET/DELETE)
-    std::string headers = ResponseBuilder::handle(conn, request);
-    _clientWriteBuffers[conn->fd] = headers;
-    epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
-    epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+		int fd = open(filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK, 0644);
+		if (fd < 0)
+		{
+			//std::cerr << "DEBUG POST: Failed to create file at -> " << filepath << " | Reason: " << strerror(errno) << std::endl;
+			_clientWriteBuffers[conn->fd] = ResponseUtils::buildErrorRes(403, *conn->serverConfig);
+			epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
+			epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+			return;
+		}
+
+		// ── determine expected size: chunked has no Content-Length ──
+		const std::string& body = request.getBody();
+		size_t expectedSize = request.getContentLength();
+		if (expectedSize == 0 && !body.empty())
+			expectedSize = body.size(); // chunked: body already decoded
+
+		conn->upload_fd = fd;
+		conn->upload_expected = expectedSize;
+		conn->upload_received = 0;
+		conn->isUpload = true;
+		conn->pendingRequest = request;
+
+		// ── drain already-buffered body (small requests + chunked) ──
+		if (!body.empty())
+		{
+			size_t toWrite = (expectedSize > 0 && body.size() > expectedSize)
+				? expectedSize : body.size();
+
+			ssize_t written = write(conn->upload_fd, body.c_str(), toWrite);
+			if (written > 0)
+				conn->upload_received += static_cast<size_t>(written);
+		}
+
+		// ── if fully received already, respond now ──
+		if (expectedSize == 0 || conn->upload_received >= conn->upload_expected)
+		{
+			close(conn->upload_fd);
+			conn->upload_fd = -1;
+			conn->isUpload = false;
+			conn->hasPendingRequest = false;
+
+			_clientWriteBuffers[conn->fd] = ResponseBuilder::handle(conn, conn->pendingRequest);
+			epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
+			epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
+		}
+		return;
+	}
+
+	// 6.(GET/DELETE)
+	std::string headers = ResponseBuilder::handle(conn, request);
+	_clientWriteBuffers[conn->fd] = headers;
+	epoll_event ev; ev.events = EPOLLIN | EPOLLOUT; ev.data.ptr = conn;
+	epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
 }
 
 void Server::register_cgi_connection(Connection* clientConn)
