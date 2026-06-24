@@ -15,8 +15,17 @@ std::string GetHandler::handle(Connection* conn, const HttpRequest& req, const S
     if (req.getPath().find("..") != std::string::npos)
         return ResponseUtils::buildErrorRes(403, conf);
 
-   
     const Location* matchedLocation = conf.matchLocation(req.getPath());
+    if (matchedLocation != NULL && !matchedLocation->redirect.empty())
+    {
+        std::ostringstream oss;
+        oss << "HTTP/1.1 301 Moved Permanently\r\n";
+        oss << "Location: " << matchedLocation->redirect << "\r\n";
+        oss << "Content-Length: 0\r\n";
+        oss << "Connection: close\r\n";
+        oss << "\r\n";
+        return oss.str();
+    }
     std::string effectiveRoot = (matchedLocation && !matchedLocation->root.empty()) ? matchedLocation->root : conf.root;
     std::string fullPath = ResponseUtils::joinPath(effectiveRoot, req.getPath());
 
@@ -62,7 +71,7 @@ if (stat(filepath.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
         {
             std::string body = AutoIndexGenerator::generate(directoryPath, req.getPath());
             if (body.empty())
-                return ResponseUtils::buildErrorRes((errno == EACCES) ? 403 : 500, conf);
+                return ResponseUtils::buildErrorRes(500, conf);
 
             std::ostringstream oss;
             oss << "HTTP/1.1 200 OK\r\n";
@@ -86,7 +95,7 @@ if (stat(filepath.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
 
     int file_fd = open(filepath.c_str(), O_RDONLY);
     if (file_fd < 0)
-        return ResponseUtils::buildErrorRes((errno == EACCES) ? 403 : 404, conf);
+        return ResponseUtils::buildErrorRes(404, conf);
 
     if (fstat(file_fd, &st) != 0)
     {

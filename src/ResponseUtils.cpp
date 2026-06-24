@@ -78,7 +78,17 @@ std::string ResponseUtils::buildErrorRes(int code, const ServerConfig& conf)
     if (!errorFile.empty())
         body = ResponseUtils::readFileDescriptor(errorFile);
     if (body.empty())
-        body = "<html><body><h1>Error</h1></body></html>";
+    {
+        std::string reason;
+        if (code == 400) reason = "Bad Request";
+        else if (code == 403) reason = "Forbidden";
+        else if (code == 404) reason = "Not Found";
+        else if (code == 405) reason = "Method Not Allowed";
+        else if (code == 413) reason = "Payload Too Large";
+        else reason = "Internal Server Error";
+        body = "<html><body><h1>" + reason + "</h1></body></html>";
+    }
+
     std::ostringstream oss;
 
     if (code == 400)

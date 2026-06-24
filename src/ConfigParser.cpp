@@ -99,12 +99,22 @@ Location ConfigParser::parseLocation(std::ifstream& file, int& line_number)
             if (!(iss >> loc.cgi_pass))
                 throw std::runtime_error("Missing value for 'cgi_pass' at line " + intToString(line_number));
         }
+        else if (key == "upload_path")
+        {
+            if (!(iss >> loc.upload_path))
+                throw std::runtime_error("Missing value for 'upload_path' at line " + intToString(line_number));
+        }
         else if (key == "client_max_body_size")
         {
             size_t value = 0;
             if (!(iss >> value) || iss.fail())
                 throw std::runtime_error("Missing or invalid value for 'client_max_body_size' at line " + intToString(line_number));
             loc.client_max_body_size = value;
+        }
+        else if (key == "redirect")
+        {
+            if (!(iss >> loc.redirect))
+                throw std::runtime_error("Missing value for 'redirect' at line " + intToString(line_number));
         }
     }
     return loc;
