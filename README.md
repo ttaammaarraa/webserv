@@ -93,16 +93,27 @@ Ensure the server is running: `./webserv configs/evaluation_full.conf`
 ### 5. Configuration & Error Handling
 * **Invalid Syntax (invalid.conf):**
 `./webserv configs/invalid.conf`
-Expectation: Detect syntax error, print a clear message, and exit safely.
+
+	Expectation: Detect syntax error, print a clear message, and exit safely.
 
 * **Duplicate Server Name (duplicate_server_name.conf):**
 `./webserv configs/duplicate_server_name.conf`
-Expectation: Detect conflict (server_name/port) and report a warning or error.
+
+	Expectation: Detect conflict (server_name/port) and report a warning or error.
 
 ### 6. Multi-Server Routing
-* **Ensure the server is running: ./webserv configs/evaluation_multi.conf :**
-`curl -H "Host: server1.com" http://127.0.0.1:8084/`
+* **Ensure the server is running: `./webserv configs/evaluation_multi.conf` :**
+
+	`curl -H "Host: server1.com" http://127.0.0.1:8084/`
 `curl -H "Host: server2.com" http://127.0.0.1:8085/`
+
+### 7. Query String Test
+Ensure the server is running: `./webserv configs/evaluation_cgi.conf or ./webserv default.conf`
+
+* **To test if the server correctly parses and passes query parameters to CGI scripts:**
+`curl -v "http://127.0.0.1:8081/cgi-bin/test_query.py?name=HELLOOOOO"`
+
+Expectation: The CGI script receives the QUERY_STRING environment variable as name=HELLOOOOO and processes it accordingly.)
 
 
 # Testing with Siege (Load Testing)
