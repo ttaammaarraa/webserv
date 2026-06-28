@@ -399,7 +399,7 @@ void Server::handle_client(Connection* conn)
             filepath = ResponseUtils::joinPath(matchedLocation->upload_path, filename);
         }
         else
-        	filepath = ResponseUtils::joinPath(conn->serverConfig->root, request.getPath());
+            filepath = ResponseUtils::joinPath(conn->serverConfig->root, request.getPath());
 
         int fd = open(filepath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0)

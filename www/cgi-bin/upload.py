@@ -3,7 +3,7 @@ import os
 import sys
 import cgi
 
-upload_dir = "./uploads"
+upload_dir = "/home/taabu-fe/sgoinfre/upload"
 
 if not os.path.exists(upload_dir):
     os.makedirs(upload_dir)
