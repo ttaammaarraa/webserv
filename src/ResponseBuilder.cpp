@@ -104,14 +104,6 @@ bool ResponseBuilder::streamGetChunk(Connection* conn, int epoll_fd)
 	ssize_t sent = send(conn->fd, buffer, static_cast<size_t>(bytesRead), 0);
 	if (sent < 0)
 	{
-		// if (errno == EAGAIN || errno == EWOULDBLOCK)
-		// {
-		// 	struct epoll_event ev;
-		// 	ev.events = EPOLLOUT;
-		// 	ev.data.ptr = conn;
-		// 	epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
-		// 	return true;
-		// }
 		return false;
 	}
 

@@ -261,7 +261,7 @@ void Server::handle_accept(Connection* serverConn)
     clientConn->fd = client_fd;
     clientConn->isServer = false;
     clientConn->serverConfig = serverConn->serverConfig;
-    clientConn->last_activity = time(NULL); // ⭐ Track time
+    clientConn->last_activity = time(NULL); //   Track time
 
     _connections[client_fd] = clientConn;
 
@@ -543,14 +543,13 @@ void Server::handle_cgi(Connection* conn, uint32_t events)
             sawEOF = true;
             break;
         }
-        // bytes < 0: pipe not ready or closed, stop reading
-        if (errno == EAGAIN || errno == EWOULDBLOCK)
-        {
-            // If epoll also signaled HUP/ERR, treat as EOF
+        else
+    	{
+        	// If epoll also signaled HUP/ERR, treat as EOF
             if (events & (EPOLLHUP | EPOLLERR))
                 sawEOF = true;
-            break;
-        }
+           	break;
+		}
         sawEOF = true; // other read error = treat as EOF
         break;
     }
@@ -607,7 +606,6 @@ void Server::handle_cgi_stdin(Connection* conn)
         conn->cgi_stdin_sent += static_cast<size_t>(written);
         if (conn->cgi_stdin_sent >= body.size())
             cleanup_connection(conn);
-        // else: not done yet, epoll EPOLLOUT will fire again
     }
     else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
     {
@@ -622,7 +620,7 @@ void Server::handle_cgi_stdin(Connection* conn)
 
 void Server::handle_client_write(Connection* conn)
 {
-    conn->last_activity = time(NULL); // ⭐ Update time on write
+    conn->last_activity = time(NULL); //   Update time on write
 
     std::map<int, std::string>::iterator it = _clientWriteBuffers.find(conn->fd);
     if (it != _clientWriteBuffers.end() && !it->second.empty())
@@ -680,7 +678,7 @@ void Server::run()
 
     while (g_keepRunning)
     {
-        check_timeouts(); // ⭐ Check timeouts in every loop
+        check_timeouts(); //   Check timeouts in every loop
 
         int nfds = epoll_wait(epoll_fd, events, 1024, 1000);
         if (nfds < 0)
