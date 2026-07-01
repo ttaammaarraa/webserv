@@ -133,6 +133,7 @@ HttpRequest HttpRequest::parse(const std::string& raw_request)
         }
         
         // Successfully parsed complete chunked body
+        req._complete = true;
         return req;
     }
 

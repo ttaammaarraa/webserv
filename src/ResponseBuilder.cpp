@@ -2,7 +2,6 @@
 #include <sstream>
 #include <sys/stat.h>
 #include <iostream>
-#include <stdexcept>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -17,56 +16,25 @@
 #include "ResponseUtils.hpp"
 #include "CGIHandler.hpp"
 
-static void cleanupResponseBuilderConnection(Connection* conn)
-{
-	if (!conn)
-		return;
-
-	if (conn->file_fd != -1)
-	{
-		close(conn->file_fd);
-		conn->file_fd = -1;
-	}
-
-	if (conn->upload_fd != -1)
-	{
-		close(conn->upload_fd);
-		conn->upload_fd = -1;
-	}
-
-	if (conn->stream_fd != -1)
-	{
-		close(conn->stream_fd);
-		conn->stream_fd = -1;
-	}
-
-	if (conn->cgi_stdin_fd != -1)
-	{
-		close(conn->cgi_stdin_fd);
-		conn->cgi_stdin_fd = -1;
-	}
-
-	conn->file_size = 0;
-	conn->bytes_sent = 0;
-	conn->isStreaming = false;
-	conn->hasPendingRequest = false;
-	conn->isUpload = false;
-	conn->upload_expected = 0;
-	conn->upload_received = 0;
-	conn->upload_buffer.clear();
-}
-
 // Helper utilities moved to ResponseUtils
 
 std::string ResponseBuilder::handle(Connection* conn, const HttpRequest& req)
 {
 	if (!conn || !conn->serverConfig)
 	{
-		cleanupResponseBuilderConnection(conn);
-		throw std::runtime_error("Invalid connection or missing server configuration in ResponseBuilder::handle");
+		return "";
 	}
-
-	cleanupResponseBuilderConnection(conn);
+	if (conn)
+	{
+		if (conn->file_fd != -1)
+		{
+			close(conn->file_fd);
+			conn->file_fd = -1;
+		}
+		conn->file_size = 0;
+		conn->bytes_sent = 0;
+		conn->isStreaming = false;
+	}
 
 	std::string method = req.getMethod();
     const Location* loc = conn->serverConfig->matchLocationForRequest(req.getPath(), method);
@@ -100,6 +68,7 @@ std::string ResponseBuilder::handle(Connection* conn, const HttpRequest& req)
 
 bool ResponseBuilder::streamGetChunk(Connection* conn, int epoll_fd)
 {
+	(void)epoll_fd;
 	if (!conn)
 		return false;
 	if (conn->file_fd == -1)
@@ -135,17 +104,12 @@ bool ResponseBuilder::streamGetChunk(Connection* conn, int epoll_fd)
 	ssize_t sent = send(conn->fd, buffer, static_cast<size_t>(bytesRead), 0);
 	if (sent < 0)
 	{
-		if (errno == EAGAIN || errno == EWOULDBLOCK)
-		{
-			struct epoll_event ev;
-			ev.events = EPOLLOUT;
-			ev.data.ptr = conn;
-			epoll_ctl(epoll_fd, EPOLL_CTL_MOD, conn->fd, &ev);
-			return true;
-		}
 		return false;
 	}
-
+	if (sent == 0)
+    {
+        return false;
+    }
 	conn->bytes_sent += static_cast<size_t>(sent);
 	if (conn->bytes_sent >= conn->file_size)
 	{

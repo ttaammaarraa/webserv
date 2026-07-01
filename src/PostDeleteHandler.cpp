@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
+#include <iostream>
 
 std::string PostDeleteHandler::handlePost(Connection* conn, const HttpRequest& req, const ServerConfig& conf)
 {
@@ -53,7 +54,7 @@ std::string PostDeleteHandler::handleDelete(Connection* conn, const HttpRequest&
         return ResponseUtils::buildErrorRes(403, conf);
 
     if (unlink(filepath.c_str()) != 0)
-        return ResponseUtils::buildErrorRes((errno == EACCES) ? 403 : 500, conf);
+        return ResponseUtils::buildErrorRes(403, conf);
 
     std::ostringstream oss;
     oss << "HTTP/1.1 204 No Content\r\n";

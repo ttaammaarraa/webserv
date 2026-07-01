@@ -12,6 +12,7 @@ struct Location
     std::string index;
     std::string upload_path;
     std::string cgi_pass;
+    std::string redirect; 
     bool autoindex;
     size_t client_max_body_size;
     std::vector<std::string> allowed_methods;
