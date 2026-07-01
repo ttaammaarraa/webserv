@@ -106,7 +106,10 @@ bool ResponseBuilder::streamGetChunk(Connection* conn, int epoll_fd)
 	{
 		return false;
 	}
-
+	if (sent == 0)
+    {
+        return false;
+    }
 	conn->bytes_sent += static_cast<size_t>(sent);
 	if (conn->bytes_sent >= conn->file_size)
 	{

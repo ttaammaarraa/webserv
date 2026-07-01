@@ -75,6 +75,7 @@ class Server
         void handle_cgi(Connection* conn, uint32_t events);
         void handle_cgi_stdin(Connection* conn);
         void register_cgi_connection(Connection* clientConn);
+        void cleanup_connection_io(Connection* conn);
         void setupEpoll();
         bool setupListeningSocket(const ServerConfig& serverConfig);
         void addServerToEpoll(int serverFd);
