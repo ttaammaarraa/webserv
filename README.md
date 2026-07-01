@@ -82,35 +82,44 @@ Ensure the server is running: `./webserv configs/evaluation_full.conf`
 * **Autoindex Disabled (Serving Index File):** `curl -v http://127.0.0.1:8080/has_index/`
 * **Autoindex Disabled (Security/No Index):** `curl -v http://127.0.0.1:8080/no_index/`
 
-### 4. Advanced Features & Uploads
-* **File Upload (`evaluation_upload.conf`):**
-  ```bash
-  echo "Hello World" > test_upload.txt
-  curl -v -F "file=@test_upload.txt" http://127.0.0.1:8082/uploads
-* **Max Body Size (413) (`evaluation_413.conf`):**
-`curl -v -X POST -d "This string is definitely larger than the limit we set in our config file" http://127.0.0.1:8083/`
+### 5. Advanced Features & File Cycle (Upload, Get, Delete)
+Ensure the server is running: `./webserv configs/evaluation_upload.conf`
+* **Create a test file:** `echo "Hello Webserv" > test_upload.txt`
+* **Upload File (POST - 201 Created):** `curl -X POST -H "Content-Type: text/plain" --data-binary @test_upload.txt -v http://127.0.0.1:8082/upload/test_upload.txt`
+* **Retrieve Uploaded File (GET - 200 OK):** `curl -X GET -v http://127.0.0.1:8082/upload/test_upload.txt`
+* **Delete Uploaded File (DELETE - 204 No Content):** `curl -X DELETE -v http://127.0.0.1:8082/upload/test_upload.txt`
 
-### 5. Configuration & Error Handling
-* **Invalid Syntax (invalid.conf):**
-`./webserv configs/invalid.conf`
-Expectation: Detect syntax error, print a clear message, and exit safely.
+### 6. Max Body Size (413 Payload Too Large)
+Ensure the server is running: `./webserv configs/evaluation_413.conf`
+* **Test exceeding body limit:** `curl -v -X POST -H "Content-Type: text/plain" -d "This string is definitely larger than the limit we set in our config file" http://127.0.0.1:8083/`
 
-* **Duplicate Server Name (duplicate_server_name.conf):**
-`./webserv configs/duplicate_server_name.conf`
-Expectation: Detect conflict (server_name/port) and report a warning or error.
+### 7. Configuration & Error Handling
+Ensure the server is running: `./webserv configs/duplicate_server_name.conf` (or `invalid.conf`)
+* **Invalid Syntax:** `./webserv configs/invalid.conf`
+  *Expectation:* Detect syntax error, print a clear message, and exit safely.
+* **Duplicate Server Name:** `./webserv configs/duplicate_server_name.conf`
+  *Expectation:* Detect conflict (server_name/port) and report a warning or error.
 
-### 6. Multi-Server Routing
-* **Ensure the server is running: ./webserv configs/evaluation_multi.conf :**
-`curl -H "Host: server1.com" http://127.0.0.1:8084/`
-`curl -H "Host: server2.com" http://127.0.0.1:8085/`
+### 8. Multi-Server Routing
+Ensure the server is running: `./webserv configs/evaluation_multi.conf`
+* **Test Server 1:** `curl -H "Host: server1.com" http://127.0.0.1:8084/`
+* **Test Server 2:** `curl -H "Host: server2.com" http://127.0.0.1:8085/`
+
+### 9. CGI Error Handling
+Ensure the server is running: `./webserv configs/evaluation_cgi.conf`
+* **CGI Timeout / Infinite Loop:** `curl -v http://127.0.0.1:8081/cgi-bin/infinite.py`
+  *Expectation:* The server should detect the timeout, terminate the process, and return an error (e.g., 500 or 504) without crashing.
+* **CGI Syntax Error:** `curl -v http://127.0.0.1:8081/cgi-bin/error.py`
+  *Expectation:* Return 500 Internal Server Error without crashing.
+
+### 10. Browser Verification & Redirects
+Ensure the server is running: `./webserv configs/evaluation_full.conf`
+* **Network Tab Inspection:** Open your browser, press `F12` (Network Tab), and navigate to `http://127.0.0.1:8080/`.
+  *Expectation:* Observe `Status Code: 200 OK` and verify correct `Response Headers` (e.g., Server name, Content-Length).
 
 
-# Testing with Siege (Load Testing)
+### 11. Testing with Siege (Load Testing)
 Siege is used to simulate multiple concurrent users and verify that the server remains stable under high load without crashing or blocking.
-
-
-## Running a Load Test
-To test how your server handles 10 users simultaneously for 30 seconds, run the following command in your terminal:
-
-```bash
-siege -c 10 -t 30S http://127.0.0.1:8080/
+Ensure the server is running: `./webserv configs/evaluation_basic.conf`
+* **Run a Load Test (Benchmarking Mode):** `siege -c 10 -t 30S -b http://127.0.0.1:8080/`
+  *Expectation:* Availability remains above 99.5%, no hanging connections, and no memory leaks (monitor via `top` or `htop` during execution).
