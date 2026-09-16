@@ -26,7 +26,7 @@ Run the compiled executable and provide a configuration file as an argument:
 If no configuration file is provided, the program will attempt to run using a default setup. You can test the server using any standard web browser or command-line tools like `curl` and `telnet`.
 
 ## Resources
-*## Resources
+
 **Networking & Sockets:**
 * [Beej's Guide to Network Programming](https://beej.us/guide/bgnet/)
 * [IBM - Nonblocking I/O and Sockets](https://developer.ibm.com/articles/l-async/)
@@ -54,7 +54,7 @@ If no configuration file is provided, the program will attempt to run using a de
 During the development of this project, I used Gemini (AI Assistant) as an architectural sounding board and debugging assistant. Specifically, the AI helped with:
 
 * **Debugging Complex Logic:** Discussing the safest way to implement a full-duplex non-blocking `epoll` loop (handling `EPOLLIN` and `EPOLLOUT` simultaneously) and placing map-guards to prevent segmentation faults during sudden client hangups.
-* **Strict C++98 Compliance:** Ensuring the codebase strictly adheres to the C++98 standard. For instance, Gemini helped replace modern C++20 functions (like `std::string::starts_with()`) with compliant alternatives (`std::string::compare()`).
+* **Strict C++98 Compliance:** Ensuring the codebase strictly adheres to the C++98 standard. For instance, the AI helped replace modern C++20 functions (like `std::string::starts_with()`) with compliant alternatives (`std::string::compare()`).
 * **Enforcing Subject Rules:** Identifying and replacing forbidden system calls (such as swapping `pread()` with standard sequential `read()`) to guarantee the project met all 42 School requirements. All AI-assisted logic was heavily reviewed, modified, and integrated manually by the team.<!--  -->
 
 # Testing
